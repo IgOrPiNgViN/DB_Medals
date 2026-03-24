@@ -1,0 +1,303 @@
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QDialog, QFormLayout, QLineEdit, QDateEdit, QDialogButtonBox,
+    QComboBox, QTextEdit, QGroupBox, QMessageBox, QCheckBox, QScrollArea,
+)
+from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtGui import QFont
+
+from api_client import APIError
+
+
+class CreateBulletinDialog(QDialog):
+    """Dialog for creating a new bulletin."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Создать бюллетень")
+        self.setMinimumWidth(400)
+
+        layout = QFormLayout(self)
+
+        self.number_edit = QLineEdit()
+        self.start_date = QDateEdit(QDate.currentDate())
+        self.start_date.setCalendarPopup(True)
+        self.end_date = QDateEdit(QDate.currentDate().addDays(14))
+        self.end_date.setCalendarPopup(True)
+        self.address_edit = QLineEdit()
+
+        layout.addRow("Номер бюллетеня:", self.number_edit)
+        layout.addRow("Дата начала:", self.start_date)
+        layout.addRow("Дата окончания:", self.end_date)
+        layout.addRow("Почтовый адрес:", self.address_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def get_data(self) -> dict:
+        return {
+            "number": self.number_edit.text().strip(),
+            "start_date": self.start_date.date().toString("yyyy-MM-dd"),
+            "end_date": self.end_date.date().toString("yyyy-MM-dd"),
+            "postal_address": self.address_edit.text().strip(),
+        }
+
+
+class DistributionDialog(QDialog):
+    """Dialog to select NK members for bulletin distribution."""
+
+    def __init__(self, members: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Рассылка бюллетеня")
+        self.setMinimumSize(480, 420)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Выберите членов НК для рассылки:"))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        self._check_layout = QVBoxLayout(container)
+
+        self._checkboxes: list[tuple[int, QCheckBox]] = []
+        for m in members:
+            cb = QCheckBox(m.get("full_name", f"ID {m['id']}"))
+            cb.setChecked(True)
+            self._check_layout.addWidget(cb)
+            self._checkboxes.append((m["id"], cb))
+        self._check_layout.addStretch()
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+
+        btn_row = QHBoxLayout()
+        btn_all = QPushButton("Выбрать всех")
+        btn_all.clicked.connect(lambda: self._set_all(True))
+        btn_row.addWidget(btn_all)
+        btn_none = QPushButton("Снять всех")
+        btn_none.clicked.connect(lambda: self._set_all(False))
+        btn_row.addWidget(btn_none)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _set_all(self, checked: bool):
+        for _, cb in self._checkboxes:
+            cb.setChecked(checked)
+
+    def selected_member_ids(self) -> list[int]:
+        return [mid for mid, cb in self._checkboxes if cb.isChecked()]
+
+
+class BulletinPage(QWidget):
+    """Bulletin creation and management page."""
+
+    SECTIONS = ["Учреждение наград и НК", "Награждение лауреатов"]
+
+    def __init__(self, api_client, parent=None):
+        super().__init__(parent)
+        self.api = api_client
+        self._bulletins: list[dict] = []
+        self._current_bulletin_id: int | None = None
+        self._build_ui()
+        self.load_data()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 18, 24, 18)
+
+        title = QLabel("Бюллетени")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        root.addWidget(title)
+
+        top_row = QHBoxLayout()
+        self.btn_create = QPushButton("Создать бюллетень")
+        self.btn_create.clicked.connect(self._on_create)
+        top_row.addWidget(self.btn_create)
+        top_row.addStretch()
+        root.addLayout(top_row)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["№", "Номер", "Дата начала", "Дата окончания"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.itemSelectionChanged.connect(self._on_bulletin_selected)
+        root.addWidget(self.table)
+
+        # ── section editing area (shown after selecting a bulletin) ──────
+        self.section_group = QGroupBox("Содержание бюллетеня")
+        sg_layout = QVBoxLayout(self.section_group)
+
+        sec_row = QHBoxLayout()
+        sec_row.addWidget(QLabel("Раздел:"))
+        self.section_combo = QComboBox()
+        self.section_combo.addItems(self.SECTIONS)
+        self.section_combo.currentIndexChanged.connect(self._on_section_changed)
+        sec_row.addWidget(self.section_combo, 1)
+        sg_layout.addLayout(sec_row)
+
+        # Section 1: manual question
+        self.question_widget = QWidget()
+        q_layout = QVBoxLayout(self.question_widget)
+        q_layout.setContentsMargins(0, 8, 0, 0)
+        q_layout.addWidget(QLabel("Текст вопроса:"))
+        self.question_edit = QTextEdit()
+        self.question_edit.setMaximumHeight(100)
+        q_layout.addWidget(self.question_edit)
+        self.btn_save_question = QPushButton("Сохранить вопрос")
+        self.btn_save_question.clicked.connect(self._on_save_question)
+        q_layout.addWidget(self.btn_save_question, alignment=Qt.AlignLeft)
+        sg_layout.addWidget(self.question_widget)
+
+        # Section 2: laureate selection
+        self.laureate_widget = QWidget()
+        l_layout = QFormLayout(self.laureate_widget)
+        l_layout.setContentsMargins(0, 8, 0, 0)
+        self.laureate_combo = QComboBox()
+        l_layout.addRow("Лауреат:", self.laureate_combo)
+        self.initiator_combo = QComboBox()
+        l_layout.addRow("Инициатор:", self.initiator_combo)
+        sg_layout.addWidget(self.laureate_widget)
+        self.laureate_widget.setVisible(False)
+
+        btn_row = QHBoxLayout()
+        self.btn_generate = QPushButton("Сформировать бюллетень")
+        self.btn_generate.clicked.connect(self._on_generate)
+        btn_row.addWidget(self.btn_generate)
+
+        self.btn_distribute = QPushButton("Рассылка")
+        self.btn_distribute.clicked.connect(self._on_distribute)
+        btn_row.addWidget(self.btn_distribute)
+        btn_row.addStretch()
+        sg_layout.addLayout(btn_row)
+
+        self.section_group.setVisible(False)
+        root.addWidget(self.section_group)
+
+    # ── data ─────────────────────────────────────────────────────────────
+
+    def load_data(self):
+        try:
+            self._bulletins = self.api.get_bulletins()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить бюллетени:\n{e}")
+            self._bulletins = []
+
+        self.table.setRowCount(0)
+        for i, b in enumerate(self._bulletins):
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            self.table.setItem(i, 1, QTableWidgetItem(b.get("number", "")))
+            self.table.setItem(i, 2, QTableWidgetItem(b.get("start_date", "")))
+            self.table.setItem(i, 3, QTableWidgetItem(b.get("end_date", "")))
+
+    # ── slots ────────────────────────────────────────────────────────────
+
+    def _on_create(self):
+        dlg = CreateBulletinDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        data = dlg.get_data()
+        if not data["number"]:
+            QMessageBox.warning(self, "Ошибка", "Номер бюллетеня не может быть пустым.")
+            return
+        try:
+            self.api.create_bulletin(data)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать бюллетень:\n{e}")
+            return
+        self.load_data()
+
+    def _on_bulletin_selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            self.section_group.setVisible(False)
+            self._current_bulletin_id = None
+            return
+        row = rows[0].row()
+        if 0 <= row < len(self._bulletins):
+            self._current_bulletin_id = self._bulletins[row]["id"]
+            self.section_group.setVisible(True)
+            self._on_section_changed(self.section_combo.currentIndex())
+
+    def _on_section_changed(self, idx: int):
+        is_section1 = idx == 0
+        self.question_widget.setVisible(is_section1)
+        self.laureate_widget.setVisible(not is_section1)
+
+        if not is_section1:
+            self._load_laureates()
+
+    def _load_laureates(self):
+        self.laureate_combo.clear()
+        self.initiator_combo.clear()
+        try:
+            laureates = self.api.get_laureates()
+            for la in laureates:
+                display = la.get("full_name", la.get("name", f"ID {la['id']}"))
+                self.laureate_combo.addItem(display, la["id"])
+        except APIError:
+            pass
+        try:
+            members = self.api.get_committee_members(is_active=True)
+            for m in members:
+                self.initiator_combo.addItem(m.get("full_name", f"ID {m['id']}"), m["id"])
+        except APIError:
+            pass
+
+    def _on_save_question(self):
+        if self._current_bulletin_id is None:
+            return
+        text = self.question_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Ошибка", "Введите текст вопроса.")
+            return
+        try:
+            section_data = {"title": self.SECTIONS[0]}
+            section = self.api.add_bulletin_section(self._current_bulletin_id, section_data)
+            section_id = section["id"]
+            self.api.add_section_question(section_id, {"text": text})
+            QMessageBox.information(self, "Успех", "Вопрос сохранён.")
+            self.question_edit.clear()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
+
+    def _on_generate(self):
+        QMessageBox.information(
+            self, "Формирование",
+            "Формирование документа бюллетеня будет реализовано позднее.",
+        )
+
+    def _on_distribute(self):
+        if self._current_bulletin_id is None:
+            return
+        try:
+            members = self.api.get_committee_members(is_active=True)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить список НК:\n{e}")
+            return
+        if not members:
+            QMessageBox.information(self, "Информация", "Нет действующих членов НК.")
+            return
+
+        dlg = DistributionDialog(members, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        selected = dlg.selected_member_ids()
+        if not selected:
+            QMessageBox.warning(self, "Предупреждение", "Не выбран ни один член НК.")
+            return
+        try:
+            self.api.distribute_bulletin(self._current_bulletin_id, selected)
+            QMessageBox.information(self, "Успех", f"Бюллетень разослан {len(selected)} членам НК.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка рассылки:\n{e}")
