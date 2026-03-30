@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont, QColor, QBrush
 
 from api_client import APIError
+from ui.print_helpers import print_table, pdf_table
 
 COLOR_RECEIVED = QColor("#C8E6C9")
 COLOR_NOT_RECEIVED = QColor("#FFCDD2")
@@ -123,10 +124,13 @@ class MonitoringPage(QWidget):
         bottom.addWidget(self.btn_show_monitoring)
 
         self.btn_print = QPushButton("Печать")
-        self.btn_print.clicked.connect(
-            lambda: QMessageBox.information(self, "Печать", "Функция печати будет реализована позднее."),
-        )
+        self.btn_print.clicked.connect(self._on_print)
         bottom.addWidget(self.btn_print)
+
+        self.btn_pdf = QPushButton("В PDF…")
+        self.btn_pdf.setProperty("class", "btn-secondary")
+        self.btn_pdf.clicked.connect(self._on_pdf)
+        bottom.addWidget(self.btn_pdf)
 
         bottom.addStretch()
         root.addLayout(bottom)
@@ -232,3 +236,9 @@ class MonitoringPage(QWidget):
             self, "Результаты",
             "Переход к подсчёту голосов.",
         )
+
+    def _on_print(self):
+        print_table(self.table, "Мониторинг ответов", self)
+
+    def _on_pdf(self):
+        pdf_table(self.table, "Мониторинг ответов", self, "monitoring.pdf")

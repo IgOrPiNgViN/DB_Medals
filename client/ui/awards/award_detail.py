@@ -1,13 +1,17 @@
+from collections import defaultdict
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QFormLayout,
     QLineEdit, QTextEdit, QDateEdit, QComboBox, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QLabel,
     QMessageBox, QAbstractItemView, QDialog, QGroupBox, QScrollArea,
-    QSizePolicy,
+    QSizePolicy, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QDate
+from PyQt5.QtGui import QPixmap
 
 from api_client import APIClient, APIError
+from ui.tab_helpers import configure_tab_bar_no_clip
 
 APPROVAL_TYPES = ["НК", "Геральдисты", "Родственники", "Спонсоры"]
 
@@ -92,6 +96,47 @@ class _AddRowDialog(QDialog):
 
 # ── Tab: Характеристика ─────────────────────────────────────────────────
 
+_AWARD_TYPE_RU = {
+    "medal": "Медали",
+    "ppz": "ППЗ",
+    "distinction": "Знаки отличия",
+    "decoration": "Украшения",
+}
+
+_ACCESS_GROUP_ORDER = [
+    "Медаль — блок формы Access",
+    "ППЗ — блок формы Access",
+    "Учёт",
+    "Учреждение и документы",
+    "Разработка (поля Access)",
+    "Согласование (поля Access)",
+    "Производство (поля Access)",
+    "Прочие поля Access",
+]
+
+
+def _access_field_group(field_name: str) -> str:
+    n = (field_name or "").strip()
+    if n.startswith("М -"):
+        return _ACCESS_GROUP_ORDER[0]
+    if n.startswith("П -"):
+        return _ACCESS_GROUP_ORDER[1]
+    if n.startswith("УЧ") or n.startswith("Учёт"):
+        return _ACCESS_GROUP_ORDER[2]
+    if any(
+        x in n
+        for x in ("Учреждение", "Положение", "протокол", "Дата_протокол", "Номер_протокол", "Архив")
+    ):
+        return _ACCESS_GROUP_ORDER[3]
+    if n.startswith("РАЗР") or "РАЗР_" in n:
+        return _ACCESS_GROUP_ORDER[4]
+    if n.startswith("СОГЛ") or "СОГЛ_" in n:
+        return _ACCESS_GROUP_ORDER[5]
+    if n.startswith("ПРОИЗВ") or "ПРОИЗВ_" in n:
+        return _ACCESS_GROUP_ORDER[6]
+    return _ACCESS_GROUP_ORDER[7]
+
+
 class _CharacteristicsTab(QWidget):
     dirty_changed = pyqtSignal(bool)
 
@@ -108,29 +153,145 @@ class _CharacteristicsTab(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(scroll.NoFrame)
         container = QWidget()
-        self.form = QFormLayout(container)
+        self._outer = QVBoxLayout(container)
+        self._outer.setSpacing(14)
+
+        base_box = QGroupBox("Основные поля (редактирование)")
+        self.form = QFormLayout(base_box)
         self.form.setSpacing(10)
-        scroll.setWidget(container)
-        root.addWidget(scroll, 1)
 
         self.fields: dict[str, QLineEdit] = {}
-        for label, key in [
-            ("Название:", "name"),
-            ("Тип:", "award_type"),
-            ("Описание:", "description"),
-            ("Статус:", "status"),
+        for label, key, readonly in [
+            ("Название:", "name", False),
+            ("Тип награды:", "award_type", True),
+            ("Краткое описание:", "description", False),
         ]:
             edit = QLineEdit()
-            edit.textChanged.connect(self._mark_dirty)
+            edit.setReadOnly(readonly)
+            if not readonly:
+                edit.textChanged.connect(self._mark_dirty)
             self.fields[key] = edit
             self.form.addRow(label, edit)
 
+        self._outer.addWidget(base_box)
+
+        img_box = QGroupBox("Изображения награды")
+        img_row = QHBoxLayout(img_box)
+        img_row.setSpacing(16)
+
+        self._img_front_lbl = QLabel()
+        self._img_back_lbl = QLabel()
+        for lbl in (self._img_front_lbl, self._img_back_lbl):
+            lbl.setFixedSize(200, 200)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("background: #f4f6f9; border-radius: 8px;")
+
+        col_f = QVBoxLayout()
+        col_f.addWidget(QLabel("Лицевая сторона"))
+        col_f.addWidget(self._img_front_lbl)
+        row_f = QHBoxLayout()
+        btn_lf = QPushButton("Загрузить лицо…")
+        btn_lf.clicked.connect(self._upload_image_front)
+        row_f.addWidget(btn_lf)
+        btn_cf = QPushButton("Удалить")
+        btn_cf.setProperty("class", "btn-secondary")
+        btn_cf.clicked.connect(self._clear_image_front)
+        row_f.addWidget(btn_cf)
+        col_f.addLayout(row_f)
+
+        col_b = QVBoxLayout()
+        col_b.addWidget(QLabel("Оборот"))
+        col_b.addWidget(self._img_back_lbl)
+        row_b = QHBoxLayout()
+        btn_lb = QPushButton("Загрузить оборот…")
+        btn_lb.clicked.connect(self._upload_image_back)
+        row_b.addWidget(btn_lb)
+        btn_cb = QPushButton("Удалить")
+        btn_cb.setProperty("class", "btn-secondary")
+        btn_cb.clicked.connect(self._clear_image_back)
+        row_b.addWidget(btn_cb)
+        col_b.addLayout(row_b)
+
+        img_row.addLayout(col_f)
+        img_row.addLayout(col_b)
+        self._outer.addWidget(img_box)
+
+        hint = QLabel(
+            "Ниже — все непустые колонки из таблицы Access «НаградыМега» "
+            "(после импорта migration/import_from_csv.py). Только просмотр."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        self._outer.addWidget(hint)
+
+        self.access_host = QWidget()
+        self.access_layout = QVBoxLayout(self.access_host)
+        self.access_layout.setSpacing(10)
+        self._outer.addWidget(self.access_host)
+        self._outer.addStretch()
+
+        scroll.setWidget(container)
+        root.addWidget(scroll, 1)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self.btn_save = QPushButton("Сохранить")
+        self.btn_save = QPushButton("Сохранить основные поля")
         self.btn_save.clicked.connect(self._save)
         btn_row.addWidget(self.btn_save)
         root.addLayout(btn_row)
+
+    def _clear_access_blocks(self):
+        while self.access_layout.count():
+            item = self.access_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _load_access_rows(self, award_id: int):
+        self._clear_access_blocks()
+        try:
+            rows = self.api.get_characteristics(award_id)
+        except APIError as e:
+            err = QLabel(f"Не удалось загрузить поля Access: {e}")
+            err.setWordWrap(True)
+            self.access_layout.addWidget(err)
+            return
+        if not rows:
+            self.access_layout.addWidget(
+                QLabel(
+                    "Импортированных полей нет. Выполните выгрузку CSV и "
+                    "python migration/import_from_csv.py — тогда здесь появятся те же "
+                    "значения, что в форме награды в Access."
+                )
+            )
+            return
+
+        grouped: dict[str, list] = defaultdict(list)
+        for r in rows:
+            fn = r.get("field_name") or ""
+            grouped[_access_field_group(fn)].append(r)
+
+        def sort_key(g: str) -> tuple[int, str]:
+            try:
+                return (_ACCESS_GROUP_ORDER.index(g), g)
+            except ValueError:
+                return (900, g)
+
+        for gname in sorted(grouped.keys(), key=sort_key):
+            box = QGroupBox(gname)
+            form = QFormLayout(box)
+            form.setSpacing(8)
+            form.setLabelAlignment(Qt.AlignTop)
+            for item in sorted(grouped[gname], key=lambda x: (x.get("field_name") or "")):
+                fn = item.get("field_name") or ""
+                val = item.get("field_value") or ""
+                name_lbl = QLabel(fn)
+                name_lbl.setWordWrap(True)
+                val_edit = QLineEdit(str(val))
+                val_edit.setReadOnly(True)
+                val_edit.setMinimumWidth(200)
+                form.addRow(name_lbl, val_edit)
+            self.access_layout.addWidget(box)
 
     def load(self, award_id: int):
         self.award_id = award_id
@@ -139,11 +300,85 @@ class _CharacteristicsTab(QWidget):
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить награду.\n{e}")
             return
-        for key, edit in self.fields.items():
-            edit.blockSignals(True)
-            edit.setText(str(data.get(key, "") or ""))
-            edit.blockSignals(False)
+        raw_type = str(data.get("award_type") or "")
+        self.fields["name"].blockSignals(True)
+        self.fields["award_type"].blockSignals(True)
+        self.fields["description"].blockSignals(True)
+        self.fields["name"].setText(str(data.get("name") or ""))
+        self.fields["award_type"].setText(_AWARD_TYPE_RU.get(raw_type, raw_type))
+        self.fields["description"].setText(str(data.get("description") or ""))
+        self.fields["name"].blockSignals(False)
+        self.fields["award_type"].blockSignals(False)
+        self.fields["description"].blockSignals(False)
+        self._load_access_rows(award_id)
+        self._refresh_images()
         self._set_dirty(False)
+
+    def _set_preview(self, lbl: QLabel, data: bytes | None) -> None:
+        pm = QPixmap(200, 200)
+        pm.fill(Qt.transparent)
+        if data:
+            p = QPixmap()
+            if p.loadFromData(data):
+                pm = p.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        lbl.setPixmap(pm)
+
+    def _refresh_images(self) -> None:
+        if self.award_id is None:
+            return
+        front = self.api.get_award_image_bytes(self.award_id, "front")
+        back = self.api.get_award_image_bytes(self.award_id, "back")
+        self._set_preview(self._img_front_lbl, front)
+        self._set_preview(self._img_back_lbl, back)
+
+    def _upload_image_front(self) -> None:
+        self._upload_image_side("front")
+
+    def _upload_image_back(self) -> None:
+        self._upload_image_side("back")
+
+    def _upload_image_side(self, side: str) -> None:
+        if self.award_id is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите изображение",
+            "",
+            "Изображения (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            if side == "front":
+                self.api.upload_award_images(self.award_id, front_path=path)
+            else:
+                self.api.upload_award_images(self.award_id, back_path=path)
+            self._refresh_images()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить изображение.\n{e}")
+
+    def _clear_image_front(self) -> None:
+        self._clear_image_side("front")
+
+    def _clear_image_back(self) -> None:
+        self._clear_image_side("back")
+
+    def _clear_image_side(self, side: str) -> None:
+        if self.award_id is None:
+            return
+        ans = QMessageBox.question(
+            self,
+            "Удаление",
+            "Удалить это изображение?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if ans != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_award_image(self.award_id, side)
+            self._refresh_images()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить изображение.\n{e}")
 
     def _mark_dirty(self):
         self._set_dirty(True)
@@ -159,11 +394,15 @@ class _CharacteristicsTab(QWidget):
     def _save(self):
         if self.award_id is None:
             return
-        payload = {k: ed.text().strip() for k, ed in self.fields.items()}
+        desc = self.fields["description"].text().strip()
+        payload = {
+            "name": self.fields["name"].text().strip(),
+            "description": desc if desc else None,
+        }
         try:
             self.api.update_award(self.award_id, payload)
             self._set_dirty(False)
-            QMessageBox.information(self, "Сохранено", "Характеристики награды сохранены.")
+            QMessageBox.information(self, "Сохранено", "Название и описание сохранены.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
 
@@ -597,6 +836,7 @@ class AwardDetailPage(QWidget):
         self.tab_productions = _ProductionsTab(self.api)
         self.tabs.addTab(self.tab_productions, "Производство")
 
+        configure_tab_bar_no_clip(self.tabs)
         root.addWidget(self.tabs, 1)
 
     # ── public ───────────────────────────────────────────────────────
@@ -644,3 +884,7 @@ class AwardDetailPage(QWidget):
     def _on_back(self):
         if self._confirm_discard():
             self.go_back.emit()
+
+    def confirm_quit_application(self) -> bool:
+        """Закрытие окна приложения: не выходить без подтверждения при несохранённых данных."""
+        return self._confirm_discard()

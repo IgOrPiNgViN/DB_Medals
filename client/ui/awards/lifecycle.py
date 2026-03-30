@@ -5,9 +5,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor
-from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from api_client import APIClient, APIError
+from ui.tab_helpers import configure_tab_bar_no_clip
+from ui.print_helpers import print_table, pdf_table
 
 AWARD_TABS = [
     ("Медали", "Медали"),
@@ -61,6 +62,11 @@ class LifecyclePage(QWidget):
         self.btn_print.clicked.connect(self._on_print)
         toolbar.addWidget(self.btn_print)
 
+        self.btn_pdf = QPushButton("В PDF…")
+        self.btn_pdf.setProperty("class", "btn-secondary")
+        self.btn_pdf.clicked.connect(self._on_pdf)
+        toolbar.addWidget(self.btn_pdf)
+
         root.addLayout(toolbar)
 
         self.tab_widget = QTabWidget()
@@ -71,6 +77,7 @@ class LifecyclePage(QWidget):
             self.tables[type_key] = table
             self.tab_widget.addTab(table, tab_label)
 
+        configure_tab_bar_no_clip(self.tab_widget)
         root.addWidget(self.tab_widget, 1)
 
     def _make_table(self) -> QTableWidget:
@@ -136,9 +143,13 @@ class LifecyclePage(QWidget):
                 pass
 
     def _on_print(self):
-        printer = QPrinter(QPrinter.HighResolution)
-        dlg = QPrintDialog(printer, self)
-        if dlg.exec_() == QPrintDialog.Accepted:
-            table = self.tab_widget.currentWidget()
-            if isinstance(table, QTableWidget):
-                table.render(printer)
+        table = self.tab_widget.currentWidget()
+        if isinstance(table, QTableWidget):
+            tab_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
+            print_table(table, f"Жизненный цикл наград — {tab_name}", self)
+
+    def _on_pdf(self):
+        table = self.tab_widget.currentWidget()
+        if isinstance(table, QTableWidget):
+            tab_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
+            pdf_table(table, f"Жизненный цикл наград — {tab_name}", self, "lifecycle_awards.pdf")

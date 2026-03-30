@@ -31,6 +31,20 @@ class AwardRead(AwardBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AwardListItem(BaseModel):
+    """Элемент списка наград (без бинарных полей) + признак наличия изображения."""
+
+    id: int
+    name: str
+    award_type: AwardType
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    has_image: bool = False
+    has_image_back: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ── AwardCharacteristic ─────────────────────────────────────────────────────
 
 class AwardCharacteristicBase(BaseModel):

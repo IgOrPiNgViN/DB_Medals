@@ -72,6 +72,60 @@ class APIClient:
     def get_award(self, award_id: int) -> dict:
         return self._get(f"/awards/{award_id}")
 
+    def get_award_image_bytes(self, award_id: int, side: str = "front") -> Optional[bytes]:
+        """Байты изображения (лицо или оборот) или None, если 404."""
+        if side not in ("front", "back"):
+            side = "front"
+        try:
+            return self._get_bytes(f"/awards/{award_id}/image", params={"side": side})
+        except APIError as e:
+            if e.status_code == 404:
+                return None
+            raise
+
+    def upload_award_images(
+        self,
+        award_id: int,
+        front_path: Optional[str] = None,
+        back_path: Optional[str] = None,
+    ) -> dict:
+        """Multipart: загрузка файлов лица и/или оборота."""
+        import os
+
+        opened: list = []
+        try:
+            parts: list = []
+            if front_path:
+                f = open(front_path, "rb")
+                opened.append(f)
+                parts.append(
+                    (
+                        "image_front",
+                        (os.path.basename(front_path), f, "application/octet-stream"),
+                    )
+                )
+            if back_path:
+                f = open(back_path, "rb")
+                opened.append(f)
+                parts.append(
+                    (
+                        "image_back",
+                        (os.path.basename(back_path), f, "application/octet-stream"),
+                    )
+                )
+            if not parts:
+                return {}
+            resp = self._request("POST", f"/awards/{award_id}/images", files=parts)
+            return resp.json()
+        finally:
+            for f in opened:
+                f.close()
+
+    def delete_award_image(self, award_id: int, side: str) -> None:
+        if side not in ("front", "back"):
+            raise ValueError("side must be front or back")
+        self._delete(f"/awards/{award_id}/images/{side}")
+
     def update_award(self, award_id: int, data: dict) -> dict:
         return self._put(f"/awards/{award_id}", json=data)
 
@@ -173,6 +227,10 @@ class APIClient:
     def link_award_to_laureate(self, laureate_id: int, data: dict) -> dict:
         return self._post(f"/laureates/{laureate_id}/awards", json=data)
 
+    def get_laureate_award_context(self, laureate_award_id: int) -> dict:
+        """ФИО лауреата и награда по ID связки (для печати удостоверения и т.п.)."""
+        return self._get(f"/laureates/links/{laureate_award_id}")
+
     # -- Lifecycle -------------------------------------------------------
 
     def get_laureate_lifecycle(self, laureate_award_id: int) -> dict:
@@ -251,6 +309,10 @@ class APIClient:
 
     def get_bulletin(self, bulletin_id: int) -> dict:
         return self._get(f"/voting/bulletins/{bulletin_id}")
+
+    def get_bulletin_full(self, bulletin_id: int) -> dict:
+        """Бюллетень с разделами и вопросами."""
+        return self._get(f"/voting/bulletins/{bulletin_id}/full")
 
     def update_bulletin(self, bulletin_id: int, data: dict) -> dict:
         return self._put(f"/voting/bulletins/{bulletin_id}", json=data)
@@ -343,6 +405,14 @@ class APIClient:
             params["to_date"] = to_date.isoformat()
         return self._get("/reports/statistics", params=params)
 
+    def report_lifecycle_by_stage(self) -> dict:
+        """Сводка: сколько связок на каждом этапе ЖЦ лауреата."""
+        return self._get("/reports/lifecycle-by-stage")
+
+    def report_site_export(self) -> dict:
+        """JSON для публикации на сайте (лауреаты и награды)."""
+        return self._get("/reports/site-export")
+
     # ====================================================================
     #  BACKUP  /backup
     # ====================================================================
@@ -363,8 +433,20 @@ class APIClient:
         return self._get_bytes(f"/backup/export/csv/{table_name}")
 
     # ====================================================================
+    #  ACCESS MIRROR (полные таблицы как в CSV Access)
+    # ====================================================================
+
+    def list_access_mirror_tables(self) -> list:
+        return self._get("/access-mirror/tables")
+
+    def get_access_mirror_data(self, table: str) -> dict:
+        return self._get("/access-mirror/data", params={"table": table})
+
+    # ====================================================================
     #  HEALTH CHECK
     # ====================================================================
 
     def health_check(self) -> dict:
-        return self._get("/")
+        # Не использовать "/" — при base_url .../api это даёт GET /api/ и раньше давало 404.
+        # Относительный "health" и "/health" оба дают .../api/health (см. httpx merge_urls).
+        return self._get("health")

@@ -67,6 +67,51 @@ def get_bulletin(bulletin_id: int, db: Session = Depends(get_db)):
     return _get_bulletin_or_404(db, bulletin_id)
 
 
+@router.get("/bulletins/{bulletin_id}/full")
+def get_bulletin_full(bulletin_id: int, db: Session = Depends(get_db)):
+    """Бюллетень с разделами и вопросами (для клиента: формирование документа, голосование)."""
+    b = (
+        db.query(Bulletin)
+        .options(
+            joinedload(Bulletin.sections).joinedload(BulletinSection.questions),
+        )
+        .filter(Bulletin.id == bulletin_id)
+        .first()
+    )
+    if not b:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+
+    def _sections():
+        for s in sorted(b.sections, key=lambda x: (x.section_order or 0, x.id)):
+            qs = sorted(s.questions, key=lambda q: (q.question_order or 0, q.id))
+            yield {
+                "id": s.id,
+                "section_name": s.section_name,
+                "section_order": s.section_order,
+                "questions": [
+                    {
+                        "id": q.id,
+                        "question_text": q.question_text,
+                        "question_order": q.question_order,
+                        "initiator": q.initiator,
+                        "laureate_award_id": q.laureate_award_id,
+                    }
+                    for q in qs
+                ],
+            }
+
+    return {
+        "id": b.id,
+        "number": b.number,
+        "bulletin_type": b.bulletin_type.value if b.bulletin_type else None,
+        "voting_start": b.voting_start,
+        "voting_end": b.voting_end,
+        "postal_address": b.postal_address,
+        "status": b.status.value if b.status else None,
+        "sections": list(_sections()),
+    }
+
+
 @router.put("/bulletins/{bulletin_id}", response_model=BulletinRead)
 def update_bulletin(
     bulletin_id: int, payload: BulletinUpdate, db: Session = Depends(get_db),

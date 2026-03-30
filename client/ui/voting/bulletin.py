@@ -7,7 +7,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont
 
+import html as html_module
+
 from api_client import APIError
+from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html
 
 
 class CreateBulletinDialog(QDialog):
@@ -106,6 +109,7 @@ class BulletinPage(QWidget):
         self.api = api_client
         self._bulletins: list[dict] = []
         self._current_bulletin_id: int | None = None
+        self._last_doc_html: str = ""
         self._build_ui()
         self.load_data()
 
@@ -179,6 +183,21 @@ class BulletinPage(QWidget):
         btn_row.addWidget(self.btn_distribute)
         btn_row.addStretch()
         sg_layout.addLayout(btn_row)
+
+        doc_row = QHBoxLayout()
+        self.btn_print_doc = QPushButton("Печать документа")
+        self.btn_print_doc.clicked.connect(self._on_print_document)
+        doc_row.addWidget(self.btn_print_doc)
+        self.btn_pdf_doc = QPushButton("В PDF…")
+        self.btn_pdf_doc.setProperty("class", "btn-secondary")
+        self.btn_pdf_doc.clicked.connect(self._on_pdf_document)
+        doc_row.addWidget(self.btn_pdf_doc)
+        self.btn_word_doc = QPushButton("Для Word (HTML)")
+        self.btn_word_doc.setProperty("class", "btn-secondary")
+        self.btn_word_doc.clicked.connect(self._on_word_document)
+        doc_row.addWidget(self.btn_word_doc)
+        doc_row.addStretch()
+        sg_layout.addLayout(doc_row)
 
         self.section_group.setVisible(False)
         root.addWidget(self.section_group)
@@ -262,20 +281,101 @@ class BulletinPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Введите текст вопроса.")
             return
         try:
-            section_data = {"title": self.SECTIONS[0]}
-            section = self.api.add_bulletin_section(self._current_bulletin_id, section_data)
-            section_id = section["id"]
-            self.api.add_section_question(section_id, {"text": text})
+            full = self.api.get_bulletin_full(self._current_bulletin_id)
+            section_id = None
+            for s in full.get("sections", []):
+                if s.get("section_name") == self.SECTIONS[0]:
+                    section_id = s["id"]
+                    break
+            if section_id is None:
+                sec = self.api.add_bulletin_section(
+                    self._current_bulletin_id,
+                    {
+                        "bulletin_id": self._current_bulletin_id,
+                        "section_name": self.SECTIONS[0],
+                        "section_order": 0,
+                    },
+                )
+                section_id = sec["id"]
+                order = 0
+            else:
+                order = 0
+                for s in full.get("sections", []):
+                    if s.get("id") == section_id:
+                        order = len(s.get("questions") or [])
+                        break
+            self.api.add_section_question(
+                section_id,
+                {
+                    "section_id": section_id,
+                    "question_text": text,
+                    "question_order": order,
+                },
+            )
             QMessageBox.information(self, "Успех", "Вопрос сохранён.")
             self.question_edit.clear()
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
 
+    def _build_bulletin_html(self) -> str:
+        if self._current_bulletin_id is None:
+            return ""
+        try:
+            data = self.api.get_bulletin_full(self._current_bulletin_id)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить бюллетень:\n{e}")
+            return ""
+        parts = [
+            "<html><head><meta charset='utf-8'></head><body>",
+            f"<h1>Бюллетень голосования № {html_module.escape(str(data.get('number', '?')))}</h1>",
+            f"<p>Период голосования: {html_module.escape(str(data.get('voting_start', '—')))} — "
+            f"{html_module.escape(str(data.get('voting_end', '—')))}</p>",
+            f"<p>Адрес: {html_module.escape(str(data.get('postal_address') or '—'))}</p>",
+        ]
+        secs = data.get("sections") or []
+        if not secs:
+            parts.append("<p><i>Вопросы не добавлены. Сохраните вопросы в разделе «Учреждение наград и НК».</i></p>")
+        for sec in secs:
+            parts.append(f"<h2>{html_module.escape(sec.get('section_name', ''))}</h2><ol>")
+            for q in sec.get("questions") or []:
+                qt = q.get("question_text", "")
+                parts.append(f"<li>{html_module.escape(qt)}</li>")
+            parts.append("</ol>")
+        parts.append("</body></html>")
+        return "".join(parts)
+
     def _on_generate(self):
+        if self._current_bulletin_id is None:
+            QMessageBox.warning(self, "Формирование", "Выберите бюллетень в таблице.")
+            return
+        self._last_doc_html = self._build_bulletin_html()
+        if not self._last_doc_html:
+            return
         QMessageBox.information(
             self, "Формирование",
-            "Формирование документа бюллетеня будет реализовано позднее.",
+            "Текст бюллетеня подготовлен. Используйте «Печать документа», «В PDF» или «Для Word».",
         )
+
+    def _on_print_document(self):
+        if not self._last_doc_html:
+            self._last_doc_html = self._build_bulletin_html()
+        if not self._last_doc_html:
+            return
+        print_html(self._last_doc_html, self)
+
+    def _on_pdf_document(self):
+        if not self._last_doc_html:
+            self._last_doc_html = self._build_bulletin_html()
+        if not self._last_doc_html:
+            return
+        export_html_to_pdf(self._last_doc_html, self, "бюллетень.pdf")
+
+    def _on_word_document(self):
+        if not self._last_doc_html:
+            self._last_doc_html = self._build_bulletin_html()
+        if not self._last_doc_html:
+            return
+        export_html_for_word(self._last_doc_html, self, "бюллетень.html")
 
     def _on_distribute(self):
         if self._current_bulletin_id is None:

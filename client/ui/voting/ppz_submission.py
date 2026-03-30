@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QGroupBox, QFormLayout, QMessageBox, QTextEdit,
@@ -6,6 +8,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
+from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html, plain_text_to_html
 
 
 class PPZSubmissionPage(QWidget):
@@ -129,11 +132,34 @@ class PPZSubmissionPage(QWidget):
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать представление:\n{e}")
 
+    def _build_document_html(self) -> str:
+        body = self.info_display.toPlainText().strip()
+        if not body:
+            return ""
+        title = (
+            "Представление на награждение (ППЗ) — "
+            f"{datetime.now().strftime('%d.%m.%Y')}"
+        )
+        extra = f"\n\n<i>Сформировано: {datetime.now().strftime('%d.%m.%Y %H:%M')}</i>"
+        return plain_text_to_html(title, body + extra)
+
     def _on_export_pdf(self):
-        QMessageBox.information(self, "Экспорт", "Конвертация в PDF будет реализована позднее.")
+        html = self._build_document_html()
+        if not html:
+            QMessageBox.warning(self, "Экспорт", "Выберите лауреата с данными.")
+            return
+        export_html_to_pdf(html, self, "ППЗ.pdf")
 
     def _on_export_word(self):
-        QMessageBox.information(self, "Экспорт", "Конвертация в Word будет реализована позднее.")
+        html = self._build_document_html()
+        if not html:
+            QMessageBox.warning(self, "Экспорт", "Выберите лауреата с данными.")
+            return
+        export_html_for_word(html, self, "ППЗ.html")
 
     def _on_print(self):
-        QMessageBox.information(self, "Печать", "Функция печати будет реализована позднее.")
+        html = self._build_document_html()
+        if not html:
+            QMessageBox.warning(self, "Печать", "Выберите лауреата с данными.")
+            return
+        print_html(html, self)

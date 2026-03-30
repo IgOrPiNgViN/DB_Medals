@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor
 
 from api_client import APIError
+from ui.print_helpers import print_table, pdf_table
 
 COLOR_SIGNED = QColor("#C8E6C9")
 COLOR_UNSIGNED = QColor("#FFF9C4")
@@ -22,11 +23,13 @@ class ProtocolDetailDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        st = str(protocol.get("status", "")).lower()
+        signed = st == "signed" or protocol.get("is_signed")
         info_text = (
             f"Номер: {protocol.get('number', '—')}\n"
             f"Дата: {protocol.get('date', '—')}\n"
-            f"Бюллетень: {protocol.get('bulletin_number', '—')}\n"
-            f"Статус: {'Подписан' if protocol.get('is_signed') else 'Не подписан'}\n"
+            f"ID бюллетеня: {protocol.get('bulletin_id', '—')}\n"
+            f"Статус: {'Подписан' if signed else 'Не подписан'}\n"
         )
         info = QTextEdit()
         info.setPlainText(info_text)
@@ -85,10 +88,13 @@ class ProtocolPage(QWidget):
         bottom.addWidget(self.btn_toggle_signed)
 
         self.btn_print = QPushButton("Печать")
-        self.btn_print.clicked.connect(
-            lambda: QMessageBox.information(self, "Печать", "Функция печати будет реализована позднее."),
-        )
+        self.btn_print.clicked.connect(self._on_print)
         bottom.addWidget(self.btn_print)
+
+        self.btn_pdf = QPushButton("В PDF…")
+        self.btn_pdf.setProperty("class", "btn-secondary")
+        self.btn_pdf.clicked.connect(self._on_pdf)
+        bottom.addWidget(self.btn_pdf)
 
         bottom.addStretch()
         root.addLayout(bottom)
@@ -105,13 +111,13 @@ class ProtocolPage(QWidget):
         self.table.setRowCount(0)
         for i, p in enumerate(self._protocols):
             self.table.insertRow(i)
-            is_signed = p.get("is_signed", False)
+            is_signed = str(p.get("status", "")).lower() == "signed"
             bg = COLOR_SIGNED if is_signed else COLOR_UNSIGNED
 
             items_data = [
                 str(i + 1),
                 p.get("number", ""),
-                p.get("date", ""),
+                str(p.get("date", "")),
                 "Подписан" if is_signed else "Не подписан",
                 "☑" if is_signed else "☐",
             ]
@@ -128,7 +134,14 @@ class ProtocolPage(QWidget):
         row = index.row()
         if row < 0 or row >= len(self._protocols):
             return
-        protocol = self._protocols[row]
+        protocol = dict(self._protocols[row])
+        bid = protocol.get("bulletin_id")
+        if bid is not None:
+            try:
+                results = self.api.get_vote_results(bid)
+                protocol["results"] = results
+            except APIError:
+                protocol["results"] = []
         dlg = ProtocolDetailDialog(protocol, self)
         dlg.exec_()
 
@@ -142,10 +155,19 @@ class ProtocolPage(QWidget):
             return
 
         protocol = self._protocols[row]
-        new_signed = not protocol.get("is_signed", False)
+        currently = str(protocol.get("status", "")).lower() == "signed"
         try:
-            self.api.update_protocol(protocol["id"], {"is_signed": new_signed})
+            self.api.update_protocol(
+                protocol["id"],
+                {"status": "draft" if currently else "signed"},
+            )
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось обновить протокол:\n{e}")
             return
         self.load_data()
+
+    def _on_print(self):
+        print_table(self.table, "Протоколы", self)
+
+    def _on_pdf(self):
+        pdf_table(self.table, "Протоколы", self, "protocols.pdf")

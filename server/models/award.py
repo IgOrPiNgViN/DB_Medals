@@ -54,7 +54,8 @@ class AwardCharacteristic(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
-    field_name = Column(String(255), nullable=False)
+    # Имена полей из Access (НаградыМега) бывают длинными
+    field_name = Column(Text, nullable=False)
     field_value = Column(Text)
 
     award = relationship("Award", back_populates="characteristics")

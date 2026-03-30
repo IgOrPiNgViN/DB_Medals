@@ -40,6 +40,32 @@ def list_laureates(category: Optional[str] = None, db: Session = Depends(get_db)
     return q.all()
 
 
+@router.get("/links/{laureate_award_id}")
+def get_laureate_award_context(laureate_award_id: int, db: Session = Depends(get_db)):
+    """Контекст связки лауреат–награда (ФИО, название награды) для печати и форм."""
+    la = (
+        db.query(LaureateAward)
+        .options(
+            joinedload(LaureateAward.laureate),
+            joinedload(LaureateAward.award),
+        )
+        .filter(LaureateAward.id == laureate_award_id)
+        .first()
+    )
+    if not la:
+        raise HTTPException(status_code=404, detail="LaureateAward not found")
+    return {
+        "laureate_award_id": la.id,
+        "laureate_id": la.laureate_id,
+        "full_name": la.laureate.full_name if la.laureate else "",
+        "award_id": la.award_id,
+        "award_name": la.award.name if la.award else "",
+        "award_type": la.award.award_type.value if la.award and la.award.award_type else None,
+        "assigned_date": la.assigned_date,
+        "status": la.status,
+    }
+
+
 @router.post("/", response_model=LaureateRead, status_code=status.HTTP_201_CREATED)
 def create_laureate(payload: LaureateCreate, db: Session = Depends(get_db)):
     obj = Laureate(**payload.model_dump())

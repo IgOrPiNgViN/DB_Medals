@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QLabel, QMessageBox, QDateEdit,
-    QAbstractItemView, QGroupBox, QRadioButton, QButtonGroup,
+    QAbstractItemView, QGroupBox, QRadioButton, QButtonGroup, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QDate, QRectF
 from PyQt5.QtGui import QPainter, QColor, QFont, QPen
@@ -139,6 +139,11 @@ class StatisticsPage(QWidget):
         btn_print.clicked.connect(self._on_print)
         period_layout.addWidget(btn_print)
 
+        btn_pdf = QPushButton("В PDF…")
+        btn_pdf.setProperty("class", "btn-secondary")
+        btn_pdf.clicked.connect(self._on_pdf)
+        period_layout.addWidget(btn_pdf)
+
         layout.addWidget(period_group)
 
         mid = QHBoxLayout()
@@ -189,13 +194,17 @@ class StatisticsPage(QWidget):
             to_date = self.date_to.date().toPyDate()
 
         try:
-            self._stats = self.api.report_statistics(from_date=from_date, to_date=to_date)
+            raw = self.api.report_statistics(from_date=from_date, to_date=to_date)
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить статистику:\n{e.detail}")
             self._stats = []
+            self._fill_table()
+            return
 
-        if isinstance(self._stats, dict):
-            self._stats = self._stats.get("data", []) or []
+        if isinstance(raw, dict):
+            self._stats = raw.get("by_category") or []
+        else:
+            self._stats = raw or []
 
         self._fill_table()
 
@@ -208,7 +217,14 @@ class StatisticsPage(QWidget):
             cat = row.get("category", "")
             count = row.get("count", 0)
             display = CATEGORY_DISPLAY.get(cat, cat or "Не указана")
-            pct = (count / total * 100) if total else 0
+            pct_raw = row.get("percent")
+            if pct_raw is not None:
+                try:
+                    pct = float(pct_raw)
+                except (TypeError, ValueError):
+                    pct = (count / total * 100) if total else 0
+            else:
+                pct = (count / total * 100) if total else 0
 
             self.table.setItem(i, 0, self._make_item(display))
             self.table.setItem(i, 1, self._make_item(str(count)))
@@ -231,3 +247,18 @@ class StatisticsPage(QWidget):
             painter = QPainter(printer)
             self.render(painter)
             painter.end()
+
+    def _on_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить отчёт в PDF", "", "PDF (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(path)
+        painter = QPainter(printer)
+        self.render(painter)
+        painter.end()

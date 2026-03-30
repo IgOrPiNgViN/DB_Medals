@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor
 
 from api_client import APIError
+from ui.voting.protocol import ProtocolDetailDialog
 
 THRESHOLD = 0.65
 COLOR_PASS = QColor("#C8E6C9")
@@ -235,10 +236,14 @@ class VoteCountingPage(QWidget):
         if self._current_bulletin_id is None:
             return
         try:
-            bulletin = self.api.get_bulletin(self._current_bulletin_id)
+            data = self.api.get_bulletin_full(self._current_bulletin_id)
             self._questions = []
-            for section in bulletin.get("sections", []):
-                self._questions.extend(section.get("questions", []))
+            for section in data.get("sections", []):
+                for q in section.get("questions", []):
+                    self._questions.append({
+                        "id": q["id"],
+                        "text": q.get("question_text", ""),
+                    })
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить вопросы:\n{e}")
             return
@@ -273,14 +278,45 @@ class VoteCountingPage(QWidget):
     def _on_generate_protocol(self):
         if self._current_bulletin_id is None:
             return
+        idx = self.bulletin_combo.currentIndex()
+        if idx < 0 or idx >= len(self._bulletins):
+            return
+        b = self._bulletins[idx]
+        num = str(b.get("number", self._current_bulletin_id))
         try:
-            self.api.create_protocol(self._current_bulletin_id, {})
+            self.api.create_protocol(
+                self._current_bulletin_id,
+                {
+                    "bulletin_id": self._current_bulletin_id,
+                    "number": f"П-{num}",
+                },
+            )
             QMessageBox.information(self, "Успех", "Протокол сформирован.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать протокол:\n{e}")
 
     def _on_show_protocol(self):
-        QMessageBox.information(
-            self, "Протокол",
-            "Детальный просмотр протокола будет реализован позднее.",
+        if self._current_bulletin_id is None:
+            return
+        try:
+            protocols = self.api.get_protocols()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить протоколы:\n{e}")
+            return
+        proto = next(
+            (p for p in protocols if p.get("bulletin_id") == self._current_bulletin_id),
+            None,
         )
+        if not proto:
+            QMessageBox.information(
+                self, "Протокол",
+                "Сначала нажмите «Сформировать протокол».",
+            )
+            return
+        display = dict(proto)
+        try:
+            display["results"] = self.api.get_vote_results(self._current_bulletin_id)
+        except APIError:
+            display["results"] = []
+        dlg = ProtocolDetailDialog(display, self)
+        dlg.exec_()

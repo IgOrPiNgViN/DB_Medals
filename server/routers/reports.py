@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import Optional
-from datetime import date
+from datetime import date, datetime, timezone
 
 from database import get_db
 from models.award import Award, AwardEstablishment, AwardDevelopment, InventoryItem
@@ -159,6 +159,98 @@ def incomplete_lifecycle(db: Session = Depends(get_db)):
                 "incomplete_stages": stages,
             })
     return result
+
+
+_STAGE_ORDER = [
+    "nomination",
+    "voting",
+    "decision",
+    "registration",
+    "ceremony",
+    "publication",
+]
+
+
+def _first_open_stage(lc: LaureateLifecycle | None) -> str:
+    """Текущий (первый незакрытый) этап ЖЦ лауреата; все закрыты — «complete»."""
+    if lc is None:
+        return "nomination"
+    if not lc.nomination_done:
+        return "nomination"
+    if not lc.voting_done:
+        return "voting"
+    if not lc.decision_done:
+        return "decision"
+    if not lc.registration_done:
+        return "registration"
+    if not lc.ceremony_done:
+        return "ceremony"
+    if not lc.publication_done:
+        return "publication"
+    return "complete"
+
+
+@router.get("/lifecycle-by-stage")
+def lifecycle_by_stage(db: Session = Depends(get_db)):
+    """
+    Сводка по этапам ЖЦ лауреата (ТЗ: сколько на этапе, список лауреатов).
+    Каждая связка лауреат–награда отнесена к первому незавершённому этапу
+    (или к «complete», если все этапы отмечены).
+    """
+    la_list = (
+        db.query(LaureateAward)
+        .options(
+            joinedload(LaureateAward.laureate),
+            joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle),
+        )
+        .all()
+    )
+    by_stage: dict[str, list[dict]] = {s: [] for s in _STAGE_ORDER}
+    by_stage["complete"] = []
+
+    for la in la_list:
+        lc = la.lifecycle
+        stage = _first_open_stage(lc)
+        entry = {
+            "laureate_award_id": la.id,
+            "laureate_id": la.laureate_id,
+            "laureate_name": la.laureate.full_name if la.laureate else "",
+            "award_id": la.award_id,
+            "award_name": la.award.name if la.award else "",
+        }
+        by_stage[stage].append(entry)
+
+    counts = {k: len(v) for k, v in by_stage.items()}
+    return {"counts": counts, "by_stage": by_stage}
+
+
+@router.get("/site-export")
+def site_export(db: Session = Depends(get_db)):
+    """Минимальная выгрузка лауреатов и наград для публикации на сайте (опционально по ТЗ)."""
+    la_list = (
+        db.query(LaureateAward)
+        .options(
+            joinedload(LaureateAward.laureate),
+            joinedload(LaureateAward.award),
+        )
+        .all()
+    )
+    items = []
+    for la in la_list:
+        items.append({
+            "laureate_award_id": la.id,
+            "laureate_name": la.laureate.full_name if la.laureate else "",
+            "laureate_category": la.laureate.category.value if la.laureate and la.laureate.category else None,
+            "award_name": la.award.name if la.award else "",
+            "award_type": la.award.award_type.value if la.award and la.award.award_type else None,
+            "assigned_date": la.assigned_date.isoformat() if la.assigned_date else None,
+        })
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items),
+        "items": items,
+    }
 
 
 @router.get("/statistics")

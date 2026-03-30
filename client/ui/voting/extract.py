@@ -1,3 +1,6 @@
+import html as html_module
+from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QLineEdit, QGroupBox, QFormLayout, QMessageBox,
@@ -6,6 +9,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
+from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html
 
 
 class ExtractPage(QWidget):
@@ -141,11 +145,42 @@ class ExtractPage(QWidget):
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать выписку:\n{e}")
 
+    def _build_extract_html(self) -> str:
+        proto_idx = self.protocol_combo.currentIndex()
+        if proto_idx < 0 or proto_idx >= len(self._protocols):
+            return ""
+        p = self._protocols[proto_idx]
+        laureate_name = self.laureate_combo.currentText().strip()
+        lines = [
+            "<html><head><meta charset='utf-8'></head><body>",
+            "<h2>Выписка из протокола</h2>",
+            f"<p><b>Протокол:</b> №{html_module.escape(str(p.get('number', '—')))} "
+            f"от {html_module.escape(str(p.get('date', '—')))}</p>",
+            f"<p><b>Лауреат:</b> {html_module.escape(laureate_name or '—')}</p>",
+            f"<p><i>Сформировано: {datetime.now().strftime('%d.%m.%Y %H:%M')}</i></p>",
+            "<p>Текст выписки подставляется после нажатия «Сформировать выписку» в базе; "
+            "здесь выводятся выбранные параметры для печати и экспорта.</p>",
+            "</body></html>",
+        ]
+        return "".join(lines)
+
     def _on_export_pdf(self):
-        QMessageBox.information(self, "Экспорт", "Конвертация в PDF будет реализована позднее.")
+        html = self._build_extract_html()
+        if not html:
+            QMessageBox.warning(self, "Экспорт", "Выберите протокол и лауреата.")
+            return
+        export_html_to_pdf(html, self, "выписка.pdf")
 
     def _on_export_word(self):
-        QMessageBox.information(self, "Экспорт", "Конвертация в Word будет реализована позднее.")
+        html = self._build_extract_html()
+        if not html:
+            QMessageBox.warning(self, "Экспорт", "Выберите протокол и лауреата.")
+            return
+        export_html_for_word(html, self, "выписка.html")
 
     def _on_print(self):
-        QMessageBox.information(self, "Печать", "Функция печати будет реализована позднее.")
+        html = self._build_extract_html()
+        if not html:
+            QMessageBox.warning(self, "Печать", "Выберите протокол и лауреата.")
+            return
+        print_html(html, self)

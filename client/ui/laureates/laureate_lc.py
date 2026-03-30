@@ -1,12 +1,15 @@
+import html as html_module
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QCheckBox, QDateEdit, QLineEdit, QComboBox, QPushButton,
-    QLabel, QMessageBox, QScrollArea, QFrame,
+    QLabel, QMessageBox, QScrollArea, QFrame, QMenu,
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QDate
 from PyQt5.QtGui import QColor, QPalette
 
 from api_client import APIError
+from ui.print_helpers import export_html_to_pdf, print_html
 
 
 class StageWidget(QGroupBox):
@@ -155,6 +158,14 @@ class LaureateLifecyclePage(QWidget):
         self.btn_issue = QPushButton("Учесть вручение (списание)")
         self.btn_issue.clicked.connect(self._on_issue)
         btn_row.addWidget(self.btn_issue)
+
+        self.btn_certificate = QPushButton("Удостоверение (черновик)…")
+        self.btn_certificate.setProperty("class", "btn-secondary")
+        self.btn_certificate.setToolTip(
+            "Печать или PDF по данным связки и этапа «Оформление» (шаблон ТЗ).",
+        )
+        self.btn_certificate.clicked.connect(self._on_certificate_menu)
+        btn_row.addWidget(self.btn_certificate)
 
         btn_row.addStretch()
 
@@ -369,15 +380,66 @@ class LaureateLifecyclePage(QWidget):
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось учесть вручение:\n{e.detail}")
 
+    def _build_certificate_html(self) -> str:
+        if self._laureate_award_id is None:
+            return ""
+        try:
+            ctx = self.api.get_laureate_award_context(self._laureate_award_id)
+        except APIError:
+            ctx = {}
+        cert_w = self.stage_registration.extra_widgets.get("certificate_number")
+        proto_w = self.stage_decision.extra_widgets.get("protocol_number")
+        signer_w = self.stage_registration.extra_widgets.get("signer_id")
+        cert = cert_w.text().strip() if isinstance(cert_w, QLineEdit) else ""
+        proto = proto_w.text().strip() if isinstance(proto_w, QLineEdit) else ""
+        signer = signer_w.currentText() if isinstance(signer_w, QComboBox) else "—"
+
+        parts = [
+            "<html><head><meta charset='utf-8'></head><body>",
+            "<h2>Удостоверение к награде (черновик для печати)</h2>",
+            f"<p><b>Награждается:</b> {html_module.escape(ctx.get('full_name') or '—')}</p>",
+            f"<p><b>Награда:</b> {html_module.escape(ctx.get('award_name') or '—')}</p>",
+            f"<p><b>Номер удостоверения:</b> {html_module.escape(cert or '—')}</p>",
+            f"<p><b>Номер протокола (решение):</b> {html_module.escape(proto or '—')}</p>",
+            f"<p><b>Подписант удостоверения:</b> {html_module.escape(signer)}</p>",
+            "<hr/><p><i>Форма сформирована из данных жизненного цикла. Подпись и печать — вручную.</i></p>",
+            "</body></html>",
+        ]
+        return "".join(parts)
+
+    def _on_certificate_menu(self):
+        if self._laureate_award_id is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Печать", self._print_certificate)
+        menu.addAction("Сохранить PDF…", self._pdf_certificate)
+        menu.exec_(self.btn_certificate.mapToGlobal(self.btn_certificate.rect().bottomLeft()))
+
+    def _print_certificate(self):
+        html = self._build_certificate_html()
+        if html:
+            print_html(html, self)
+
+    def _pdf_certificate(self):
+        html = self._build_certificate_html()
+        if html:
+            export_html_to_pdf(html, self, "udostoverenie.pdf")
+
+    def confirm_quit_application(self) -> bool:
+        if not self._dirty:
+            return True
+        reply = QMessageBox.question(
+            self, "Сохранить изменения?",
+            "Имеются несохранённые изменения. Сохранить перед выходом?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Save:
+            self._on_save()
+        return True
+
     def _on_back(self):
-        if self._dirty:
-            reply = QMessageBox.question(
-                self, "Сохранить изменения?",
-                "Имеются несохранённые изменения. Сохранить перед выходом?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-            )
-            if reply == QMessageBox.Save:
-                self._on_save()
-            elif reply == QMessageBox.Cancel:
-                return
+        if not self.confirm_quit_application():
+            return
         self.back_requested.emit()

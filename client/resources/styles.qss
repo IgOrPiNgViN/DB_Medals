@@ -317,20 +317,23 @@ QTabWidget::pane {
     background: #ffffff;
 }
 
+/* Одинаковая толщина шрифта у всех вкладок — иначе при :selected (bold) текст шире
+   рассчитанной ширины и обрезается по краям. Выделение — цвет + нижняя граница. */
 QTabBar::tab {
     background: #f0f2f5;
     color: #666666;
-    padding: 8px 18px;
+    padding: 8px 22px;
     border: 1px solid #d0d5dd;
     border-bottom: none;
     font-weight: 500;
     margin-right: 2px;
+    min-width: 168px;
 }
 
 QTabBar::tab:selected {
     background: #ffffff;
     color: #1a2332;
-    font-weight: 600;
+    font-weight: 500;
     border-bottom: 2px solid #2196F3;
 }
 

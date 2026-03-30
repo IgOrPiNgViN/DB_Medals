@@ -1,5 +1,30 @@
-import sys
 import os
+import sys
+from pathlib import Path
+
+
+def _ensure_qt_plugins() -> None:
+    """Указывает Qt путь к плагинам (Windows: иначе часто «Could not find platform plugin windows»)."""
+    try:
+        import PyQt5
+
+        base = Path(PyQt5.__file__).resolve().parent
+        candidates = [
+            base / "Qt5" / "plugins",
+            base / "Qt" / "plugins",
+        ]
+        plugins = next((p for p in candidates if p.is_dir()), None)
+        if not plugins:
+            return
+        os.environ.setdefault("QT_PLUGIN_PATH", str(plugins))
+        platforms = plugins / "platforms"
+        if platforms.is_dir():
+            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platforms))
+    except Exception:
+        pass
+
+
+_ensure_qt_plugins()
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QFile, QTextStream

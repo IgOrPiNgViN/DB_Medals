@@ -12,6 +12,7 @@ from ui.awards.awards_cards import AwardsCardsPage
 from ui.awards.award_detail import AwardDetailPage
 from ui.awards.lifecycle import LifecyclePage
 from ui.awards.warehouse import WarehousePage
+from ui.awards.current_awards_report import CurrentAwardsReportPage
 
 from ui.laureates.laureate_cards import LaureateCardsPage
 from ui.laureates.laureate_detail import LaureateDetailPage
@@ -19,6 +20,7 @@ from ui.laureates.laureate_lc import LaureateLifecyclePage
 from ui.laureates.awards_laureates import AwardsLaureatesPage
 from ui.laureates.incomplete_lc import IncompleteLCPage
 from ui.laureates.statistics import StatisticsPage
+from ui.laureates.lc_stages_report import LifecycleStagesReportPage
 
 from ui.committee.committee_list import CommitteeListPage
 from ui.committee.member_card import MemberCardPage
@@ -31,6 +33,7 @@ from ui.voting.extract import ExtractPage
 from ui.voting.ppz_submission import PPZSubmissionPage
 
 from ui.service.db_export import DBExportPage
+from ui.service.access_tables_page import AccessTablesPage
 
 
 # ── Navigation structure ────────────────────────────────────────────────────
@@ -42,11 +45,13 @@ NAV_ITEMS = [
     ("Карточки наград", "award_cards"),
     ("Жизненный цикл наград", "award_lifecycle"),
     ("Склад", "warehouse"),
+    ("Отчёт: актуальные награды", "current_awards_report"),
 
     ("ЛАУРЕАТЫ", None),
     ("Карточки лауреатов", "laureate_cards"),
     ("Награды-лауреаты", "awards_laureates"),
     ("Незавершённый ЖЦ", "incomplete_lifecycle"),
+    ("Отчёт: этапы ЖЦ", "lifecycle_stages_report"),
     ("Статистика", "statistics"),
 
     ("НАГРАДНОЙ КОМИТЕТ", None),
@@ -63,6 +68,7 @@ NAV_ITEMS = [
     "---",
 
     ("СЕРВИС", None),
+    ("Таблицы Access (как в бэкенде)", "access_mirror"),
     ("Выгрузка БД", "db_export"),
 ]
 
@@ -207,6 +213,9 @@ class MainWindow(QMainWindow):
             self._award_widgets[page_key] = page
             return page
 
+        if page_key == "current_awards_report":
+            return CurrentAwardsReportPage(self.api)
+
         if page_key == "laureate_cards":
             page = LaureateCardsPage(self.api)
             page.laureate_selected.connect(self._open_laureate_detail)
@@ -219,6 +228,11 @@ class MainWindow(QMainWindow):
 
         if page_key == "incomplete_lifecycle":
             page = IncompleteLCPage(self.api)
+            page.open_lifecycle.connect(self._open_laureate_lifecycle)
+            return page
+
+        if page_key == "lifecycle_stages_report":
+            page = LifecycleStagesReportPage(self.api)
             page.open_lifecycle.connect(self._open_laureate_lifecycle)
             return page
 
@@ -247,6 +261,9 @@ class MainWindow(QMainWindow):
 
         if page_key == "ppz_submissions":
             return PPZSubmissionPage(self.api)
+
+        if page_key == "access_mirror":
+            return AccessTablesPage(self.api)
 
         if page_key == "db_export":
             return DBExportPage(self.api)
@@ -402,6 +419,20 @@ class MainWindow(QMainWindow):
     # ── cleanup ----------------------------------------------------------
 
     def closeEvent(self, event):
+        idx = self.stack.currentIndex()
+        if idx == self._award_detail_idx:
+            if not self._award_detail.confirm_quit_application():
+                event.ignore()
+                return
+        elif idx == self._laureate_detail_idx:
+            if not self._laureate_detail.confirm_quit_application():
+                event.ignore()
+                return
+        elif idx == self._laureate_lc_idx:
+            if not self._laureate_lc.confirm_quit_application():
+                event.ignore()
+                return
+
         self._health_timer.stop()
         self.api.close()
         super().closeEvent(event)

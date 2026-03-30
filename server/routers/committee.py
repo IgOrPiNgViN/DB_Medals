@@ -22,6 +22,7 @@ def _get_member_or_404(db: Session, member_id: int) -> CommitteeMember:
 # ── CommitteeMember CRUD ────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[CommitteeMemberRead])
+@router.get("", response_model=List[CommitteeMemberRead])
 def list_members(is_active: Optional[bool] = None, db: Session = Depends(get_db)):
     q = db.query(CommitteeMember)
     if is_active is not None:

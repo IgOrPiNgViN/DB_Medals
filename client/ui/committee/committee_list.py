@@ -7,6 +7,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QFont
 
 from api_client import APIError
+from ui.print_helpers import print_table, pdf_table
 
 
 class CreateMemberDialog(QDialog):
@@ -99,6 +100,11 @@ class CommitteeListPage(QWidget):
         self.btn_print = QPushButton("Печать")
         self.btn_print.clicked.connect(self._on_print)
         toolbar.addWidget(self.btn_print)
+
+        self.btn_pdf = QPushButton("В PDF…")
+        self.btn_pdf.setProperty("class", "btn-secondary")
+        self.btn_pdf.clicked.connect(self._on_pdf)
+        toolbar.addWidget(self.btn_pdf)
 
         root.addLayout(toolbar)
 
@@ -205,7 +211,10 @@ class CommitteeListPage(QWidget):
         self.member_selected.emit(member_id)
 
     def _on_print(self):
-        QMessageBox.information(self, "Печать", "Функция печати будет реализована позднее.")
+        print_table(self.table, "Список наградного комитета", self)
+
+    def _on_pdf(self):
+        pdf_table(self.table, "Список наградного комитета", self, "committee_list.pdf")
 
     def _selected_member_id(self):
         rows = self.table.selectionModel().selectedRows()

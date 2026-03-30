@@ -243,17 +243,23 @@ class LaureateDetailPage(QWidget):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось удалить:\n{e.detail}")
 
     def _on_back(self):
-        if self._dirty:
-            reply = QMessageBox.question(
-                self, "Сохранить изменения?",
-                "Имеются несохранённые изменения. Сохранить перед выходом?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-            )
-            if reply == QMessageBox.Save:
-                self._on_save()
-            elif reply == QMessageBox.Cancel:
-                return
+        if not self.confirm_quit_application():
+            return
         self.back_requested.emit()
+
+    def confirm_quit_application(self) -> bool:
+        if not self._dirty:
+            return True
+        reply = QMessageBox.question(
+            self, "Сохранить изменения?",
+            "Имеются несохранённые изменения. Сохранить перед выходом?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Save:
+            self._on_save()
+        return True
 
     def _on_award_double_click(self, index):
         row = index.row()

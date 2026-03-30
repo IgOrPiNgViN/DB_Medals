@@ -5,9 +5,9 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QBrush
-from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from api_client import APIError
+from ui.print_helpers import print_table, pdf_table
 
 STAGE_LABELS = {
     "nomination": "Выдвижение",
@@ -63,6 +63,11 @@ class IncompleteLCPage(QWidget):
         btn_print = QPushButton("Печать")
         btn_print.clicked.connect(self._on_print)
         toolbar.addWidget(btn_print)
+
+        btn_pdf = QPushButton("В PDF…")
+        btn_pdf.setProperty("class", "btn-secondary")
+        btn_pdf.clicked.connect(self._on_pdf)
+        toolbar.addWidget(btn_pdf)
 
         layout.addLayout(toolbar)
 
@@ -179,7 +184,7 @@ class IncompleteLCPage(QWidget):
             self.open_lifecycle.emit(int(la_item.text()))
 
     def _on_print(self):
-        printer = QPrinter(QPrinter.HighResolution)
-        dlg = QPrintDialog(printer, self)
-        if dlg.exec_() == QPrintDialog.Accepted:
-            self.table.render(printer)
+        print_table(self.table, "Отчёт: Незавершённый жизненный цикл", self)
+
+    def _on_pdf(self):
+        pdf_table(self.table, "Отчёт: Незавершённый жизненный цикл", self, "incomplete_lc.pdf")

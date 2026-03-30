@@ -4,6 +4,9 @@ from PyQt5.QtWidgets import (
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt5.QtCore import Qt
+import json
+
+from api_client import APIError
 
 
 KNOWN_TABLES = [
@@ -85,6 +88,20 @@ class DBExportPage(QWidget):
         cg_layout.addLayout(csv_row)
 
         layout.addWidget(csv_group)
+
+        site_group = QGroupBox("Экспорт для сайта (опционально по ТЗ)")
+        sg_layout = QVBoxLayout(site_group)
+        sg_desc = QLabel(
+            "JSON со списком лауреатов и наград для публикации на внешнем сайте."
+        )
+        sg_desc.setWordWrap(True)
+        sg_layout.addWidget(sg_desc)
+        btn_site = QPushButton("Сохранить JSON для сайта")
+        btn_site.setProperty("class", "primary")
+        btn_site.clicked.connect(self._export_site_json)
+        sg_layout.addWidget(btn_site)
+        layout.addWidget(site_group)
+
         layout.addStretch()
 
     def _export_dump(self):
@@ -97,7 +114,7 @@ class DBExportPage(QWidget):
         try:
             self.progress.setVisible(True)
             self.progress.setRange(0, 0)
-            data = self.api.export_backup()
+            data = self.api.export_database()
             with open(path, "wb") as f:
                 f.write(data)
             self.progress.setVisible(False)
@@ -123,8 +140,7 @@ class DBExportPage(QWidget):
         try:
             self.progress.setVisible(True)
             self.progress.setRange(0, 0)
-            with open(path, "rb") as f:
-                self.api.import_backup(f)
+            self.api.import_database(path)
             self.progress.setVisible(False)
             QMessageBox.information(self, "Успех", "База данных восстановлена из дампа.")
         except Exception as e:
@@ -140,9 +156,28 @@ class DBExportPage(QWidget):
         if not path:
             return
         try:
-            data = self.api.export_table_csv(table_name)
+            data = self.api.export_csv(table_name)
             with open(path, "wb") as f:
                 f.write(data)
             QMessageBox.information(self, "Успех", f"Таблица '{table_name}' сохранена:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось выгрузить таблицу:\n{e}")
+
+    def _export_site_json(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить JSON для сайта",
+            "site_export.json",
+            "JSON (*.json);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.report_site_export()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Успех", f"JSON сохранён:\n{path}")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось получить данные:\n{e.detail}")
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось записать файл:\n{e}")
