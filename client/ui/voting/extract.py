@@ -4,12 +4,13 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QLineEdit, QGroupBox, QFormLayout, QMessageBox,
+    QFileDialog,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
-from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html
+from ui.print_helpers import export_html_to_pdf, print_html
 
 
 class ExtractPage(QWidget):
@@ -19,7 +20,8 @@ class ExtractPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._protocols: list[dict] = []
-        self._laureates: list[dict] = []
+        self._la_links: list[dict] = []
+        self._extracts: list[dict] = []
         self._build_ui()
         self._load_protocols()
 
@@ -39,10 +41,10 @@ class ExtractPage(QWidget):
         form.addRow("Номер протокола:", self.protocol_combo)
 
         self.laureate_combo = QComboBox()
-        form.addRow("Лауреат:", self.laureate_combo)
+        form.addRow("Лауреат–награда:", self.laureate_combo)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Поиск по имени лауреата...")
+        self.search_edit.setPlaceholderText("Поиск по ФИО/награде...")
         self.search_edit.textChanged.connect(self._on_search_changed)
         form.addRow("Поиск:", self.search_edit)
 
@@ -64,8 +66,8 @@ class ExtractPage(QWidget):
         self.btn_pdf.clicked.connect(self._on_export_pdf)
         export_row.addWidget(self.btn_pdf)
 
-        self.btn_word = QPushButton("Конвертировать в Word")
-        self.btn_word.clicked.connect(self._on_export_word)
+        self.btn_word = QPushButton("Word (DOCX)…")
+        self.btn_word.clicked.connect(self._on_export_docx)
         export_row.addWidget(self.btn_word)
 
         self.btn_print = QPushButton("Печать")
@@ -101,28 +103,37 @@ class ExtractPage(QWidget):
 
     def _load_laureates_for_protocol(self, proto_idx: int):
         self.laureate_combo.clear()
-        self._laureates = []
+        self._la_links = []
         try:
-            laureates = self.api.get_laureates()
-            self._laureates = laureates
+            grouped = self.api.report_awards_laureates()
+            flat = []
+            for award in grouped or []:
+                for la in award.get("laureates") or []:
+                    flat.append(la)
+            self._la_links = flat
         except APIError:
             return
-        self._fill_laureate_combo(self._laureates)
+        self._fill_laureate_combo(self._la_links)
 
-    def _fill_laureate_combo(self, laureates: list):
+    def _fill_laureate_combo(self, items: list):
         self.laureate_combo.clear()
-        for la in laureates:
-            display = la.get("full_name", la.get("name", f"ID {la['id']}"))
-            self.laureate_combo.addItem(display, la["id"])
+        for it in items:
+            la_id = it.get("laureate_award_id")
+            if la_id is None:
+                continue
+            name = it.get("full_name") or it.get("laureate_name") or ""
+            award = it.get("award_name") or ""
+            display = f"{name} — {award}".strip(" —")
+            self.laureate_combo.addItem(display or f"Связка #{la_id}", la_id)
 
     def _on_search_changed(self, text: str):
         text_lower = text.strip().lower()
         if not text_lower:
-            self._fill_laureate_combo(self._laureates)
+            self._fill_laureate_combo(self._la_links)
             return
         filtered = [
-            la for la in self._laureates
-            if text_lower in la.get("full_name", la.get("name", "")).lower()
+            it for it in self._la_links
+            if text_lower in (str(it.get("full_name") or it.get("laureate_name") or "") + " " + str(it.get("award_name") or "")).lower()
         ]
         self._fill_laureate_combo(filtered)
 
@@ -134,14 +145,18 @@ class ExtractPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Выберите протокол.")
             return
         protocol_id = self._protocols[proto_idx]["id"]
-        laureate_id = self.laureate_combo.currentData()
-        if laureate_id is None:
-            QMessageBox.warning(self, "Ошибка", "Выберите лауреата.")
+        laureate_award_id = self.laureate_combo.currentData()
+        if laureate_award_id is None:
+            QMessageBox.warning(self, "Ошибка", "Выберите связку лауреат–награда.")
             return
 
         try:
-            self.api.create_protocol_extract(protocol_id, {"laureate_id": laureate_id})
-            QMessageBox.information(self, "Успех", "Выписка сформирована.")
+            created = self.api.create_protocol_extract(
+                protocol_id,
+                {"protocol_id": protocol_id, "laureate_award_id": int(laureate_award_id)},
+            )
+            self._extracts.append(created)
+            QMessageBox.information(self, "Успех", "Выписка сформирована. Можно скачать DOCX.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать выписку:\n{e}")
 
@@ -171,12 +186,46 @@ class ExtractPage(QWidget):
             return
         export_html_to_pdf(html, self, "выписка.pdf")
 
-    def _on_export_word(self):
-        html = self._build_extract_html()
-        if not html:
-            QMessageBox.warning(self, "Экспорт", "Выберите протокол и лауреата.")
+    def _on_export_docx(self):
+        # Пытаемся найти существующую выписку (protocol_id + laureate_award_id)
+        proto_idx = self.protocol_combo.currentIndex()
+        if proto_idx < 0 or proto_idx >= len(self._protocols):
+            QMessageBox.warning(self, "Word (DOCX)", "Выберите протокол.")
             return
-        export_html_for_word(html, self, "выписка.html")
+        protocol_id = self._protocols[proto_idx]["id"]
+        laureate_award_id = self.laureate_combo.currentData()
+        if laureate_award_id is None:
+            QMessageBox.warning(self, "Word (DOCX)", "Выберите связку лауреат–награда.")
+            return
+
+        try:
+            extracts = self.api.list_protocol_extracts()
+        except APIError:
+            extracts = []
+        extract_id = None
+        for e in extracts or []:
+            if e.get("protocol_id") == protocol_id and e.get("laureate_award_id") == int(laureate_award_id):
+                extract_id = e.get("id")
+                break
+        if extract_id is None:
+            QMessageBox.information(self, "Word (DOCX)", "Сначала нажмите «Сформировать выписку».")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить выписку (DOCX)",
+            "выписка.docx",
+            "Документ Word (*.docx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.download_extract_docx(int(extract_id))
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Word (DOCX)", "Файл сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось скачать DOCX:\n{e}")
 
     def _on_print(self):
         html = self._build_extract_html()

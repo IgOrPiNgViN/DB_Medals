@@ -208,6 +208,7 @@ class QuestionResult(BaseModel):
 
 
 class MonitoringEntry(BaseModel):
+    distribution_id: int
     member_id: int
     member_name: str
     sent: bool

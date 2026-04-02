@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QAbstractItemView, QDialog, QGroupBox, QScrollArea,
     QSizePolicy, QFileDialog,
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QDate
+from PyQt5.QtCore import pyqtSignal, Qt, QDate, QTimer
 from PyQt5.QtGui import QPixmap
 
 from api_client import APIClient, APIError
@@ -20,11 +20,112 @@ PRODUCTION_COMPONENT_TYPES = [
     "Значок",
     "Кулон",
     "Запонки",
+    "ППЗ",
     "Удостоверение",
     "Футляр",
     "Колодка",
     "Другое",
 ]
+
+_PRODUCTION_COMPONENT_RU_TO_API = {
+    "Медаль": "medal",
+    "Значок": "badge",
+    "Кулон": "pendant",
+    "Запонки": "cufflinks",
+    "ППЗ": "ppz",
+    "Удостоверение": "certificate",
+    "Футляр": "box",
+    "Колодка": "case",
+    "Другое": "badge",
+}
+_PRODUCTION_COMPONENT_API_TO_RU = {v: k for k, v in _PRODUCTION_COMPONENT_RU_TO_API.items()}
+
+
+def _production_dialog_field_defs():
+    return [
+        ("Компонент:", "component_type", "combo"),
+        ("Поставщик / производитель:", "supplier", "str"),
+        ("Дата заказа:", "order_date", "date"),
+        ("Дата поставки:", "delivery_date", "date"),
+        ("Количество:", "quantity", "str"),
+        ("Статус:", "status", "str"),
+        ("Комментарий:", "details", "text"),
+    ]
+
+
+PRODUCTION_DIALOG_FIELDS = _production_dialog_field_defs()
+
+
+def _production_body_for_api(raw: dict, award_id: int | None = None) -> dict:
+    out: dict = {}
+    if award_id is not None:
+        out["award_id"] = award_id
+    ru = (raw.get("component_type") or "").strip()
+    if ru:
+        out["component_type"] = _PRODUCTION_COMPONENT_RU_TO_API.get(ru, "badge")
+    for key in ("supplier", "status", "details"):
+        v = raw.get(key, "")
+        if isinstance(v, str):
+            v = v.strip()
+        if v:
+            out[key] = v
+    for key in ("order_date", "delivery_date"):
+        v = raw.get(key, "")
+        if isinstance(v, str) and v.strip():
+            out[key] = v.strip()
+    q = raw.get("quantity", "")
+    if isinstance(q, int):
+        out["quantity"] = q
+    elif isinstance(q, str) and q.strip():
+        try:
+            out["quantity"] = int(q.strip())
+        except ValueError:
+            pass
+    return out
+
+
+def _production_form_to_update_api(raw: dict) -> dict:
+    """Тело PUT /awards/productions/{id} из данных диалога."""
+    ru = (raw.get("component_type") or "").strip()
+    out: dict = {
+        "component_type": _PRODUCTION_COMPONENT_RU_TO_API.get(ru, "badge"),
+        "supplier": (raw.get("supplier") or "").strip() or None,
+        "status": (raw.get("status") or "").strip() or None,
+        "details": (raw.get("details") or "").strip() or None,
+    }
+    od = (raw.get("order_date") or "").strip()
+    dd = (raw.get("delivery_date") or "").strip()
+    if od:
+        out["order_date"] = od
+    if dd:
+        out["delivery_date"] = dd
+    q = raw.get("quantity", "")
+    if isinstance(q, int):
+        out["quantity"] = q
+    elif isinstance(q, str) and q.strip():
+        try:
+            out["quantity"] = int(q.strip())
+        except ValueError:
+            out["quantity"] = 0
+    else:
+        out["quantity"] = 0
+    return out
+
+
+def _production_dialog_values(item: dict) -> dict:
+    api_ct = item.get("component_type") or ""
+    ru = _PRODUCTION_COMPONENT_API_TO_RU.get(api_ct, api_ct)
+    od, dd = item.get("order_date"), item.get("delivery_date")
+    qty = item.get("quantity")
+    return {
+        "component_type": ru or "",
+        "supplier": (item.get("supplier") or "").strip(),
+        "order_date": str(od)[:10] if od else "",
+        "delivery_date": str(dd)[:10] if dd else "",
+        "quantity": "" if qty is None else str(qty),
+        "status": (item.get("status") or "").strip(),
+        "details": (item.get("details") or "").strip(),
+    }
 
 
 # ── Helper: simple add-row dialog ────────────────────────────────────────
@@ -32,7 +133,13 @@ PRODUCTION_COMPONENT_TYPES = [
 class _AddRowDialog(QDialog):
     """Generic dialog that shows a form and returns a dict of values."""
 
-    def __init__(self, title: str, fields: list[tuple[str, str, type]], parent=None):
+    def __init__(
+        self,
+        title: str,
+        fields: list[tuple[str, str, type]],
+        parent=None,
+        ok_button_text: str = "Добавить",
+    ):
         """
         *fields*: list of (label, key, widget_type).
         widget_type is one of: str, 'combo', 'date', 'text'.
@@ -71,7 +178,7 @@ class _AddRowDialog(QDialog):
         cancel.setProperty("class", "btn-secondary")
         cancel.clicked.connect(self.reject)
         btn_row.addWidget(cancel)
-        ok = QPushButton("Добавить")
+        ok = QPushButton(ok_button_text)
         ok.setProperty("class", "btn-success")
         ok.clicked.connect(self.accept)
         btn_row.addWidget(ok)
@@ -92,6 +199,30 @@ class _AddRowDialog(QDialog):
             else:
                 result[key] = w.text().strip()
         return result
+
+    def set_values(self, data: dict) -> None:
+        for key, val in data.items():
+            w = self._widgets.get(key)
+            if w is None:
+                continue
+            if val is None:
+                continue
+            sval = str(val).strip() if not isinstance(val, (int, float)) else str(val)
+            if isinstance(w, QComboBox):
+                idx = w.findText(sval)
+                if idx >= 0:
+                    w.setCurrentIndex(idx)
+                elif sval:
+                    w.addItem(sval)
+                    w.setCurrentIndex(w.count() - 1)
+            elif isinstance(w, QDateEdit):
+                d = QDate.fromString(sval[:10], "yyyy-MM-dd")
+                if d.isValid():
+                    w.setDate(d)
+            elif isinstance(w, QTextEdit):
+                w.setPlainText(sval)
+            else:
+                w.setText(sval)
 
 
 # ── Tab: Характеристика ─────────────────────────────────────────────────
@@ -391,9 +522,9 @@ class _CharacteristicsTab(QWidget):
     def is_dirty(self) -> bool:
         return self._dirty
 
-    def _save(self):
+    def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
-            return
+            return True
         desc = self.fields["description"].text().strip()
         payload = {
             "name": self.fields["name"].text().strip(),
@@ -402,9 +533,13 @@ class _CharacteristicsTab(QWidget):
         try:
             self.api.update_award(self.award_id, payload)
             self._set_dirty(False)
-            QMessageBox.information(self, "Сохранено", "Название и описание сохранены.")
+            if not silent:
+                QMessageBox.information(self, "Сохранено", "Название и описание сохранены.")
+            return True
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            if not silent:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            return False
 
 
 # ── Tab: Учреждение ─────────────────────────────────────────────────────
@@ -505,9 +640,9 @@ class _EstablishmentTab(QWidget):
                 result[key] = w.text().strip()
         return result
 
-    def _save(self):
+    def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
-            return
+            return True
         payload = self._collect()
         try:
             if self._exists:
@@ -516,9 +651,13 @@ class _EstablishmentTab(QWidget):
                 self.api.create_establishment(self.award_id, payload)
                 self._exists = True
             self._set_dirty(False)
-            QMessageBox.information(self, "Сохранено", "Данные учреждения сохранены.")
+            if not silent:
+                QMessageBox.information(self, "Сохранено", "Данные учреждения сохранены.")
+            return True
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            if not silent:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            return False
 
 
 # ── Tab: Разработка ─────────────────────────────────────────────────────
@@ -619,9 +758,9 @@ class _DevelopmentTab(QWidget):
                 result[key] = w.text().strip()
         return result
 
-    def _save(self):
+    def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
-            return
+            return True
         payload = self._collect()
         try:
             if self._exists:
@@ -630,9 +769,13 @@ class _DevelopmentTab(QWidget):
                 self.api.create_development(self.award_id, payload)
                 self._exists = True
             self._set_dirty(False)
-            QMessageBox.information(self, "Сохранено", "Данные разработки сохранены.")
+            if not silent:
+                QMessageBox.information(self, "Сохранено", "Данные разработки сохранены.")
+            return True
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            if not silent:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+            return False
 
 
 # ── Tab: Согласование ───────────────────────────────────────────────────
@@ -707,12 +850,21 @@ class _ApprovalsTab(QWidget):
 # ── Tab: Производство ───────────────────────────────────────────────────
 
 class _ProductionsTab(QWidget):
-    COLUMNS = ["№", "Компонент", "Производитель", "Дата заказа", "Кол-во", "Статус"]
+    COLUMNS = [
+        "№",
+        "Компонент",
+        "Поставщик",
+        "Дата заказа",
+        "Дата поставки",
+        "Кол-во",
+        "Статус",
+    ]
 
     def __init__(self, api: APIClient, parent=None):
         super().__init__(parent)
         self.api = api
         self.award_id: int | None = None
+        self._items: list[dict] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -722,6 +874,14 @@ class _ProductionsTab(QWidget):
         self.btn_add = QPushButton("Добавить заказ")
         self.btn_add.clicked.connect(self._on_add)
         btn_row.addWidget(self.btn_add)
+        self.btn_edit = QPushButton("Изменить")
+        self.btn_edit.setProperty("class", "btn-secondary")
+        self.btn_edit.clicked.connect(self._on_edit)
+        btn_row.addWidget(self.btn_edit)
+        self.btn_del = QPushButton("Удалить")
+        self.btn_del.setProperty("class", "btn-secondary")
+        self.btn_del.clicked.connect(self._on_delete)
+        btn_row.addWidget(self.btn_del)
         root.addLayout(btn_row)
 
         self.table = QTableWidget()
@@ -733,6 +893,7 @@ class _ProductionsTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.doubleClicked.connect(self._on_row_double_clicked)
         root.addWidget(self.table, 1)
 
     def load(self, award_id: int):
@@ -743,26 +904,30 @@ class _ProductionsTab(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить производство.\n{e}")
             return
 
+        self._items = items
         self.table.setRowCount(0)
         self.table.setRowCount(len(items))
         for row, item in enumerate(items):
             self.table.setItem(row, 0, QTableWidgetItem(str(item.get("id", ""))))
-            self.table.setItem(row, 1, QTableWidgetItem(item.get("component_type", "")))
-            self.table.setItem(row, 2, QTableWidgetItem(item.get("manufacturer", "")))
-            self.table.setItem(row, 3, QTableWidgetItem(item.get("order_date", "")))
-            self.table.setItem(row, 4, QTableWidgetItem(str(item.get("quantity", ""))))
-            self.table.setItem(row, 5, QTableWidgetItem(item.get("status", "")))
+            api_ct = item.get("component_type", "") or ""
+            comp_ru = _PRODUCTION_COMPONENT_API_TO_RU.get(api_ct, api_ct)
+            self.table.setItem(row, 1, QTableWidgetItem(comp_ru))
+            self.table.setItem(row, 2, QTableWidgetItem(item.get("supplier") or ""))
+            self.table.setItem(row, 3, QTableWidgetItem(str(item.get("order_date") or "")))
+            self.table.setItem(row, 4, QTableWidgetItem(str(item.get("delivery_date") or "")))
+            self.table.setItem(row, 5, QTableWidgetItem(str(item.get("quantity", ""))))
+            self.table.setItem(row, 6, QTableWidgetItem(item.get("status") or ""))
+
+    def _on_row_double_clicked(self, index):
+        r = index.row()
+        if r >= 0:
+            self.table.selectRow(r)
+            self._on_edit()
 
     def _on_add(self):
         if self.award_id is None:
             return
-        dlg = _AddRowDialog("Новый заказ на производство", [
-            ("Компонент:", "component_type", "combo"),
-            ("Производитель:", "manufacturer", "str"),
-            ("Дата заказа:", "order_date", "date"),
-            ("Количество:", "quantity", "str"),
-            ("Статус:", "status", "str"),
-        ], self)
+        dlg = _AddRowDialog("Новый заказ на производство", PRODUCTION_DIALOG_FIELDS, self)
         combo = dlg.combo_widget("component_type")
         for t in PRODUCTION_COMPONENT_TYPES:
             combo.addItem(t)
@@ -771,15 +936,80 @@ class _ProductionsTab(QWidget):
             data = dlg.get_data()
             if data.get("quantity"):
                 try:
-                    data["quantity"] = int(data["quantity"])
+                    int(data["quantity"])
                 except ValueError:
                     QMessageBox.warning(self, "Ошибка", "Количество должно быть числом.")
                     return
             try:
-                self.api.create_production(self.award_id, data)
+                payload = _production_body_for_api(data, self.award_id)
+                self.api.create_production(self.award_id, payload)
                 self.load(self.award_id)
             except APIError as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось добавить заказ.\n{e}")
+
+    def _current_production_id(self) -> int | None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._items):
+            return None
+        pid = self._items[row].get("id")
+        return int(pid) if pid is not None else None
+
+    def _on_edit(self):
+        if self.award_id is None:
+            return
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._items):
+            QMessageBox.information(self, "Изменение", "Выберите строку в таблице.")
+            return
+        item = self._items[row]
+        pid = item.get("id")
+        if pid is None:
+            return
+        dlg = _AddRowDialog(
+            "Изменить заказ на производство",
+            PRODUCTION_DIALOG_FIELDS,
+            self,
+            ok_button_text="Сохранить",
+        )
+        combo = dlg.combo_widget("component_type")
+        for t in PRODUCTION_COMPONENT_TYPES:
+            combo.addItem(t)
+        dlg.set_values(_production_dialog_values(item))
+        if dlg.exec_() == QDialog.Accepted:
+            data = dlg.get_data()
+            if data.get("quantity"):
+                try:
+                    int(data["quantity"])
+                except ValueError:
+                    QMessageBox.warning(self, "Ошибка", "Количество должно быть числом.")
+                    return
+            try:
+                body = _production_form_to_update_api(data)
+                self.api.update_production(int(pid), body)
+                self.load(self.award_id)
+            except APIError as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить заказ.\n{e}")
+
+    def _on_delete(self):
+        pid = self._current_production_id()
+        if pid is None:
+            QMessageBox.information(self, "Удаление", "Выберите строку в таблице.")
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Удаление",
+                "Удалить выбранную запись о производстве?",
+            )
+            != QMessageBox.Yes
+        ):
+            return
+        try:
+            self.api.delete_production(pid)
+            if self.award_id is not None:
+                self.load(self.award_id)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить запись.\n{e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -795,6 +1025,9 @@ class AwardDetailPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self.award_id: int | None = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._autosave_silent)
         self._build_ui()
 
     def _build_ui(self):
@@ -819,15 +1052,15 @@ class AwardDetailPage(QWidget):
         self.tabs = QTabWidget()
 
         self.tab_chars = _CharacteristicsTab(self.api)
-        self.tab_chars.dirty_changed.connect(self._update_title_dirty)
+        self.tab_chars.dirty_changed.connect(self._on_dirty_changed)
         self.tabs.addTab(self.tab_chars, "Характеристика")
 
         self.tab_estab = _EstablishmentTab(self.api)
-        self.tab_estab.dirty_changed.connect(self._update_title_dirty)
+        self.tab_estab.dirty_changed.connect(self._on_dirty_changed)
         self.tabs.addTab(self.tab_estab, "Учреждение")
 
         self.tab_dev = _DevelopmentTab(self.api)
-        self.tab_dev.dirty_changed.connect(self._update_title_dirty)
+        self.tab_dev.dirty_changed.connect(self._on_dirty_changed)
         self.tabs.addTab(self.tab_dev, "Разработка")
 
         self.tab_approvals = _ApprovalsTab(self.api)
@@ -870,21 +1103,50 @@ class AwardDetailPage(QWidget):
         else:
             self.title_label.setText(base)
 
-    def _confirm_discard(self) -> bool:
-        if not self._has_unsaved():
-            return True
-        answer = QMessageBox.question(
-            self,
-            "Несохранённые изменения",
-            "Есть несохранённые изменения. Покинуть страницу без сохранения?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        return answer == QMessageBox.Yes
+    def _on_dirty_changed(self, _dirty: bool):
+        self._update_title_dirty(_dirty)
+        # autosave debounce: save 1.5s after last change
+        if self._has_unsaved():
+            self._autosave_timer.start(1500)
+
+    def _autosave_silent(self):
+        self._autosave(silent=True)
+
+    def _autosave(self, silent: bool = True) -> bool:
+        """
+        Автосохранение вкладок, где есть ручные поля.
+        Возвращает True, если всё сохранено или нечего сохранять.
+        """
+        ok = True
+        if self.tab_chars.is_dirty:
+            ok = self.tab_chars._save(silent=silent) and ok
+        if self.tab_estab.is_dirty:
+            ok = self.tab_estab._save(silent=silent) and ok
+        if self.tab_dev.is_dirty:
+            ok = self.tab_dev._save(silent=silent) and ok
+        return ok
 
     def _on_back(self):
-        if self._confirm_discard():
+        if self.confirm_quit_application():
             self.go_back.emit()
 
     def confirm_quit_application(self) -> bool:
         """Закрытие окна приложения: не выходить без подтверждения при несохранённых данных."""
-        return self._confirm_discard()
+        if not self._has_unsaved():
+            return True
+        # 1) try autosave silently
+        if self._autosave(silent=True) and not self._has_unsaved():
+            return True
+        # 2) fallback: ask user
+        reply = QMessageBox.question(
+            self,
+            "Сохранить изменения?",
+            "Имеются несохранённые изменения. Сохранить перед выходом?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Save:
+            if not self._autosave(silent=False):
+                return False
+        return True

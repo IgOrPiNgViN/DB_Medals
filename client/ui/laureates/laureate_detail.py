@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QLabel, QTextEdit, QMessageBox, QAbstractItemView, QGroupBox,
     QProgressBar,
 )
-from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer
 from PyQt5.QtGui import QColor
 
 from api_client import APIError
@@ -36,6 +36,9 @@ class LaureateDetailPage(QWidget):
         self._laureate_id: int | None = None
         self._original_data: dict = {}
         self._dirty = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._autosave_silent)
         self._build_ui()
 
     def _build_ui(self):
@@ -198,6 +201,10 @@ class LaureateDetailPage(QWidget):
 
     def _mark_dirty(self):
         self._dirty = True
+        self._autosave_timer.start(1500)
+
+    def _autosave_silent(self):
+        self._on_save(silent=True)
 
     def _collect_data(self) -> dict:
         data: dict = {"full_name": self.full_name.text().strip()}
@@ -211,20 +218,23 @@ class LaureateDetailPage(QWidget):
         data["notes"] = self.notes.toPlainText().strip() or None
         return data
 
-    def _on_save(self):
+    def _on_save(self, silent: bool = False):
         if self._laureate_id is None:
             return
         data = self._collect_data()
         if not data.get("full_name"):
-            QMessageBox.warning(self, "Ошибка", "Поле «ФИО» обязательно.")
+            if not silent:
+                QMessageBox.warning(self, "Ошибка", "Поле «ФИО» обязательно.")
             return
         try:
             updated = self.api.update_laureate(self._laureate_id, data)
             self._populate_fields(updated)
             self._dirty = False
-            QMessageBox.information(self, "Сохранено", "Данные лауреата обновлены.")
+            if not silent:
+                QMessageBox.information(self, "Сохранено", "Данные лауреата обновлены.")
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{e.detail}")
+            if not silent:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{e.detail}")
 
     def _on_delete(self):
         if self._laureate_id is None:
@@ -248,6 +258,10 @@ class LaureateDetailPage(QWidget):
         self.back_requested.emit()
 
     def confirm_quit_application(self) -> bool:
+        if not self._dirty:
+            return True
+        # автосохранение перед выходом/переходом
+        self._on_save(silent=True)
         if not self._dirty:
             return True
         reply = QMessageBox.question(

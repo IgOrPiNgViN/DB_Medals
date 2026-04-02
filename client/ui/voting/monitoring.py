@@ -37,28 +37,40 @@ class DetailedMonitoringDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.table, 1)
 
-        self._populate()
-
         btn_row = QHBoxLayout()
+        self.btn_mark_sent = QPushButton("Отметить отправлено")
+        self.btn_mark_sent.clicked.connect(lambda: self._mark_selected(sent=True))
+        btn_row.addWidget(self.btn_mark_sent)
+
+        self.btn_mark_received = QPushButton("Отметить получено")
+        self.btn_mark_received.clicked.connect(lambda: self._mark_selected(received=True))
+        btn_row.addWidget(self.btn_mark_received)
+
         btn_row.addStretch()
         btn_close = QPushButton("Закрыть")
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         layout.addLayout(btn_row)
 
+        self._populate()
+
     def _populate(self):
         self.table.setRowCount(0)
         for i, entry in enumerate(self._monitoring):
             self.table.insertRow(i)
             name = entry.get("member_name", f"ID {entry.get('member_id', '?')}")
-            sent = entry.get("is_sent", False)
-            received = entry.get("is_received", False)
+            # API может отдавать sent/received или is_sent/is_received
+            sent = entry.get("is_sent", entry.get("sent", False))
+            received = entry.get("is_received", entry.get("received", False))
 
             self.table.setItem(i, 0, QTableWidgetItem(name))
             self.table.setItem(i, 1, QTableWidgetItem("Да" if sent else "Нет"))
             self.table.setItem(i, 2, QTableWidgetItem(entry.get("sent_date", "—")))
             self.table.setItem(i, 3, QTableWidgetItem("Да" if received else "Нет"))
             self.table.setItem(i, 4, QTableWidgetItem(entry.get("received_date", "—")))
+            dist_id = entry.get("distribution_id")
+            if dist_id is not None:
+                self.table.item(i, 0).setData(Qt.UserRole, int(dist_id))
 
             if received:
                 color = COLOR_RECEIVED
@@ -68,6 +80,37 @@ class DetailedMonitoringDialog(QDialog):
                 color = COLOR_NOT_SENT
             for c in range(5):
                 self.table.item(i, c).setBackground(color)
+
+    def _mark_selected(self, sent: bool = False, received: bool = False):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Мониторинг", "Выберите строку.")
+            return
+        today = QDate.currentDate().toString("yyyy-MM-dd")
+        ok = 0
+        for r in rows:
+            row = r.row()
+            id_item = self.table.item(row, 0)
+            if not id_item:
+                continue
+            dist_id = id_item.data(Qt.UserRole)
+            if not dist_id:
+                continue
+            payload = {}
+            if sent:
+                payload["sent"] = True
+                payload["sent_date"] = today
+            if received:
+                payload["received"] = True
+                payload["received_date"] = today
+            try:
+                self.api.update_distribution(int(dist_id), payload)
+                ok += 1
+            except APIError as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось обновить рассылку:\n{e.detail}")
+                return
+        if ok:
+            QMessageBox.information(self, "Мониторинг", "Обновлено. Закройте окно и нажмите «Показать мониторинг» для обновления таблицы.")
 
 
 class MonitoringPage(QWidget):
@@ -168,7 +211,7 @@ class MonitoringPage(QWidget):
         headers = ["Член НК"]
         for b in self._bulletins:
             mon = self._monitoring_cache.get(b["id"], [])
-            received = sum(1 for m in mon if m.get("is_received"))
+            received = sum(1 for m in mon if m.get("is_received", m.get("received")))
             total = len(mon)
             headers.append(f"Б-{b.get('number', '?')} ({received} из {total})")
         self.table.setHorizontalHeaderLabels(headers)
@@ -195,7 +238,7 @@ class MonitoringPage(QWidget):
                 if entry is None:
                     item.setText("—")
                     item.setBackground(QBrush(COLOR_NOT_SENT))
-                elif entry.get("is_received"):
+                elif entry.get("is_received", entry.get("received")):
                     item.setText("✓")
                     item.setBackground(QBrush(COLOR_RECEIVED))
                     received_count += 1

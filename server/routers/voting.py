@@ -1,6 +1,12 @@
+from datetime import date as dt_date
+import re
+from io import BytesIO
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from typing import List
+from docx import Document
 
 from database import get_db
 from models.voting import (
@@ -8,6 +14,7 @@ from models.voting import (
     BulletinDistribution, Vote, Protocol, ProtocolExtract, PPZSubmission,
 )
 from models.committee import CommitteeMember
+from models.laureate import LaureateAward
 from schemas.voting import (
     BulletinCreate, BulletinUpdate, BulletinRead,
     BulletinSectionCreate, BulletinSectionRead,
@@ -44,6 +51,23 @@ def _get_question_or_404(db: Session, question_id: int) -> BulletinQuestion:
     if not obj:
         raise HTTPException(status_code=404, detail="Question not found")
     return obj
+
+
+def _safe_filename(s: str) -> str:
+    s = re.sub(r"[\\/:*?\"<>|]+", "_", s or "").strip()
+    return s or "document"
+
+
+def _docx_response(doc: Document, filename: str) -> Response:
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 # ── Bulletin CRUD ───────────────────────────────────────────────────────────
@@ -110,6 +134,36 @@ def get_bulletin_full(bulletin_id: int, db: Session = Depends(get_db)):
         "status": b.status.value if b.status else None,
         "sections": list(_sections()),
     }
+
+
+@router.get("/bulletins/{bulletin_id}/docx")
+def bulletin_docx(bulletin_id: int, db: Session = Depends(get_db)):
+    """DOCX-версия бюллетеня (для Word)."""
+    b = (
+        db.query(Bulletin)
+        .options(joinedload(Bulletin.sections).joinedload(BulletinSection.questions))
+        .filter(Bulletin.id == bulletin_id)
+        .first()
+    )
+    if not b:
+        raise HTTPException(status_code=404, detail="Bulletin not found")
+
+    doc = Document()
+    doc.add_heading(f"Бюллетень голосования № {b.number}", level=1)
+    doc.add_paragraph(f"Период голосования: {b.voting_start or '—'} — {b.voting_end or '—'}")
+    doc.add_paragraph(f"Адрес: {b.postal_address or '—'}")
+
+    sections = sorted(b.sections, key=lambda x: (x.section_order or 0, x.id))
+    if not sections:
+        doc.add_paragraph("Вопросы не добавлены.")
+    for s in sections:
+        doc.add_heading(str(s.section_name or ""), level=2)
+        questions = sorted(s.questions, key=lambda q: (q.question_order or 0, q.id))
+        for idx, q in enumerate(questions, 1):
+            doc.add_paragraph(f"{idx}. {q.question_text}", style="List Number")
+
+    filename = f"Бюллетень_{_safe_filename(str(b.number))}.docx"
+    return _docx_response(doc, filename)
 
 
 @router.put("/bulletins/{bulletin_id}", response_model=BulletinRead)
@@ -190,16 +244,100 @@ def distribute_bulletin(
                 status_code=404,
                 detail=f"Committee member {member_id} not found",
             )
-        dist = BulletinDistribution(
-            bulletin_id=bulletin_id,
-            member_id=member_id,
-        )
-        db.add(dist)
+        dist = db.query(BulletinDistribution).filter(
+            BulletinDistribution.bulletin_id == bulletin_id,
+            BulletinDistribution.member_id == member_id,
+        ).first()
+        if dist is None:
+            dist = BulletinDistribution(bulletin_id=bulletin_id, member_id=member_id)
+            db.add(dist)
+        # «Рассылка» = пометить как отправлено сегодня (упрощённая модель ТЗ)
+        dist.sent = True
+        dist.sent_date = dt_date.today()
         created.append(dist)
     db.commit()
     for d in created:
         db.refresh(d)
     return created
+
+
+@router.get("/bulletins/{bulletin_id}/distributions.csv")
+def export_distributions_csv(bulletin_id: int, db: Session = Depends(get_db)):
+    """
+    Экспорт рассылки бюллетеня для внешней отправки/контроля (упрощённо вместо Excel).
+    """
+    _get_bulletin_or_404(db, bulletin_id)
+    dists = (
+        db.query(BulletinDistribution)
+        .options(joinedload(BulletinDistribution.member))
+        .filter(BulletinDistribution.bulletin_id == bulletin_id)
+        .all()
+    )
+
+    def esc(v) -> str:
+        s = "" if v is None else str(v)
+        s = s.replace('"', '""')
+        return f'"{s}"'
+
+    lines = [
+        "member_id,member_name,sent,sent_date,received,received_date",
+    ]
+    for d in dists:
+        lines.append(",".join([
+            esc(d.member_id),
+            esc(d.member.full_name if d.member else ""),
+            esc(bool(d.sent)),
+            esc(d.sent_date.isoformat() if d.sent_date else ""),
+            esc(bool(d.received)),
+            esc(d.received_date.isoformat() if d.received_date else ""),
+        ]))
+
+    content = ("\n".join(lines) + "\n").encode("utf-8")
+    headers = {"Content-Disposition": f'attachment; filename="bulletin_{bulletin_id}_distributions.csv"'}
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.get("/bulletins/{bulletin_id}/distributions.xlsx")
+def export_distributions_xlsx(bulletin_id: int, db: Session = Depends(get_db)):
+    """
+    Экспорт рассылки бюллетеня в XLSX.
+    """
+    _get_bulletin_or_404(db, bulletin_id)
+    dists = (
+        db.query(BulletinDistribution)
+        .options(joinedload(BulletinDistribution.member))
+        .filter(BulletinDistribution.bulletin_id == bulletin_id)
+        .all()
+    )
+
+    try:
+        from openpyxl import Workbook
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"openpyxl is not installed: {e}")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Distributions"
+    ws.append(["member_id", "member_name", "sent", "sent_date", "received", "received_date"])
+    for d in dists:
+        ws.append([
+            d.member_id,
+            d.member.full_name if d.member else "",
+            bool(d.sent),
+            d.sent_date.isoformat() if d.sent_date else "",
+            bool(d.received),
+            d.received_date.isoformat() if d.received_date else "",
+        ])
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="bulletin_{bulletin_id}_distributions.xlsx"'}
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @router.put("/distributions/{distribution_id}", response_model=BulletinDistributionRead)
@@ -231,6 +369,7 @@ def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
     )
     return [
         MonitoringEntry(
+            distribution_id=d.id,
             member_id=d.member_id,
             member_name=d.member.full_name,
             sent=d.sent or False,
@@ -342,6 +481,49 @@ def update_protocol(
     return obj
 
 
+@router.get("/protocols/{protocol_id}/docx")
+def protocol_docx(protocol_id: int, db: Session = Depends(get_db)):
+    """DOCX-версия протокола с результатами голосования."""
+    p = (
+        db.query(Protocol)
+        .options(joinedload(Protocol.bulletin))
+        .filter(Protocol.id == protocol_id)
+        .first()
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Protocol not found")
+
+    results = vote_results(p.bulletin_id, db)
+
+    doc = Document()
+    doc.add_heading(f"Протокол № {p.number}", level=1)
+    doc.add_paragraph(f"Дата: {p.date or '—'}")
+    doc.add_paragraph(f"Бюллетень: {p.bulletin.number if p.bulletin else p.bulletin_id}")
+    doc.add_paragraph(f"Статус: {p.status.value if p.status else '—'}")
+    if p.details:
+        doc.add_paragraph(p.details)
+
+    doc.add_heading("Результаты голосования", level=2)
+    if not results:
+        doc.add_paragraph("Нет данных.")
+    else:
+        table = doc.add_table(rows=1, cols=4)
+        hdr = table.rows[0].cells
+        hdr[0].text = "Вопрос"
+        hdr[1].text = "За"
+        hdr[2].text = "Против"
+        hdr[3].text = "% За"
+        for r in results:
+            row = table.add_row().cells
+            row[0].text = str(r.question_text)
+            row[1].text = str(r.votes_for)
+            row[2].text = str(r.votes_against)
+            row[3].text = f"{r.percent_for:.1f}%"
+
+    filename = f"Протокол_{_safe_filename(str(p.number))}.docx"
+    return _docx_response(doc, filename)
+
+
 # ── Protocol Extracts ───────────────────────────────────────────────────────
 
 @router.post(
@@ -363,6 +545,44 @@ def create_extract(
     return obj
 
 
+@router.get("/extracts", response_model=List[ProtocolExtractRead])
+def list_extracts(db: Session = Depends(get_db)):
+    return db.query(ProtocolExtract).all()
+
+
+@router.get("/extracts/{extract_id}/docx")
+def extract_docx(extract_id: int, db: Session = Depends(get_db)):
+    e = (
+        db.query(ProtocolExtract)
+        .options(joinedload(ProtocolExtract.protocol), joinedload(ProtocolExtract.laureate_award))
+        .filter(ProtocolExtract.id == extract_id)
+        .first()
+    )
+    if not e:
+        raise HTTPException(status_code=404, detail="Extract not found")
+
+    la = (
+        db.query(LaureateAward)
+        .options(joinedload(LaureateAward.laureate), joinedload(LaureateAward.award))
+        .filter(LaureateAward.id == e.laureate_award_id)
+        .first()
+    )
+
+    doc = Document()
+    doc.add_heading("Выписка из протокола", level=1)
+    doc.add_paragraph(f"Протокол: № {e.protocol.number if e.protocol else '—'} от {e.protocol.date if e.protocol else '—'}")
+    if la and la.laureate:
+        doc.add_paragraph(f"Лауреат: {la.laureate.full_name}")
+    if la and la.award:
+        doc.add_paragraph(f"Награда: {la.award.name}")
+    doc.add_paragraph(f"Дата выписки: {e.extract_date or '—'}")
+    if e.details:
+        doc.add_paragraph(e.details)
+
+    filename = f"Выписка_{_safe_filename(str(e.protocol.number if e.protocol else 'protocol'))}_{extract_id}.docx"
+    return _docx_response(doc, filename)
+
+
 # ── PPZ Submissions ─────────────────────────────────────────────────────────
 
 @router.post(
@@ -376,3 +596,43 @@ def create_ppz_submission(payload: PPZSubmissionCreate, db: Session = Depends(ge
     db.commit()
     db.refresh(obj)
     return obj
+
+
+@router.get("/ppz-submissions", response_model=List[PPZSubmissionRead])
+def list_ppz_submissions(db: Session = Depends(get_db)):
+    return db.query(PPZSubmission).all()
+
+
+@router.get("/ppz-submissions/{ppz_id}/docx")
+def ppz_submission_docx(ppz_id: int, db: Session = Depends(get_db)):
+    obj = (
+        db.query(PPZSubmission)
+        .options(joinedload(PPZSubmission.authorized_member))
+        .filter(PPZSubmission.id == ppz_id)
+        .first()
+    )
+    if not obj:
+        raise HTTPException(status_code=404, detail="PPZ submission not found")
+
+    la = (
+        db.query(LaureateAward)
+        .options(joinedload(LaureateAward.laureate), joinedload(LaureateAward.award))
+        .filter(LaureateAward.id == obj.laureate_award_id)
+        .first()
+    )
+
+    doc = Document()
+    doc.add_heading("Представление на награждение (ППЗ)", level=1)
+    doc.add_paragraph(f"Номер: {obj.submission_number or '—'}")
+    doc.add_paragraph(f"Дата: {obj.date or '—'}")
+    if obj.authorized_member:
+        doc.add_paragraph(f"Уполномоченный: {obj.authorized_member.full_name}")
+    if la and la.laureate:
+        doc.add_paragraph(f"Лауреат: {la.laureate.full_name}")
+    if la and la.award:
+        doc.add_paragraph(f"Награда: {la.award.name}")
+    if obj.details:
+        doc.add_paragraph(obj.details)
+
+    filename = f"ППЗ_{ppz_id}_{_safe_filename(la.laureate.full_name if la and la.laureate else 'laureate')}.docx"
+    return _docx_response(doc, filename)

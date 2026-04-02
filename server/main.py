@@ -6,11 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import SERVER_HOST, SERVER_PORT
 from database import engine, Base
+from db_migrations import ensure_consent_pd_schema
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_consent_pd_schema(engine)
     yield
 
 

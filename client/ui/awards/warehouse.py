@@ -76,15 +76,28 @@ class _EditInventoryDialog(QDialog):
         cancel.clicked.connect(self.reject)
         btn_row.addWidget(cancel)
         save = QPushButton("Сохранить")
-        save.clicked.connect(self.accept)
+        save.clicked.connect(self._on_save_clicked)
         btn_row.addWidget(save)
         layout.addLayout(btn_row)
 
+    def _on_save_clicked(self):
+        t = self.total_spin.value()
+        r = self.reserve_spin.value()
+        i = self.issued_spin.value()
+        if r + i > t:
+            QMessageBox.warning(
+                self,
+                "Проверка",
+                "Сумма резерва и выданного не может превышать общее количество.",
+            )
+            return
+        self.accept()
+
     def get_data(self) -> dict:
         return {
-            "total": self.total_spin.value(),
-            "reserve": self.reserve_spin.value(),
-            "issued": self.issued_spin.value(),
+            "total_count": self.total_spin.value(),
+            "reserve_count": self.reserve_spin.value(),
+            "issued_count": self.issued_spin.value(),
         }
 
 

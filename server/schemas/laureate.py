@@ -87,6 +87,9 @@ class LaureateLifecycleBase(BaseModel):
     publication_done: Optional[bool] = False
     inventory_reserved: Optional[bool] = False
     inventory_issued: Optional[bool] = False
+    consent_sent_date: Optional[date] = None
+    consent_received_date: Optional[date] = None
+    consent_received: Optional[bool] = False
 
 
 class LaureateLifecycleCreate(LaureateLifecycleBase):
@@ -115,6 +118,9 @@ class LaureateLifecycleUpdate(BaseModel):
     publication_done: Optional[bool] = None
     inventory_reserved: Optional[bool] = None
     inventory_issued: Optional[bool] = None
+    consent_sent_date: Optional[date] = None
+    consent_received_date: Optional[date] = None
+    consent_received: Optional[bool] = None
 
 
 class LaureateLifecycleRead(LaureateLifecycleBase):

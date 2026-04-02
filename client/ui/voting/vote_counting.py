@@ -164,7 +164,7 @@ class VoteCountingPage(QWidget):
         try:
             monitoring = self.api.get_bulletin_monitoring(self._current_bulletin_id)
             self._eligible_members = [
-                m for m in monitoring if m.get("is_received")
+                m for m in monitoring if m.get("is_received", m.get("received"))
             ]
         except APIError:
             return

@@ -14,6 +14,7 @@ STAGE_LABELS = {
     "voting": "Голосование",
     "decision": "Решение",
     "registration": "Оформление",
+    "consent_pd": "Согласие ПД",
     "ceremony": "Вручение",
     "publication": "Опубликование",
 }

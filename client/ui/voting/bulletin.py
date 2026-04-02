@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QDialog, QFormLayout, QLineEdit, QDateEdit, QDialogButtonBox,
-    QComboBox, QTextEdit, QGroupBox, QMessageBox, QCheckBox, QScrollArea,
+    QComboBox, QTextEdit, QGroupBox, QMessageBox, QCheckBox, QScrollArea, QFileDialog,
 )
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont
@@ -166,10 +166,19 @@ class BulletinPage(QWidget):
         self.laureate_widget = QWidget()
         l_layout = QFormLayout(self.laureate_widget)
         l_layout.setContentsMargins(0, 8, 0, 0)
+        self.laureate_section_hint = QLabel(
+            "Показываются связки «лауреат–награда», у которых в карточке указан "
+            "тот же номер бюллетеня, что у выбранного бюллетеня.",
+        )
+        self.laureate_section_hint.setWordWrap(True)
+        l_layout.addRow(self.laureate_section_hint)
         self.laureate_combo = QComboBox()
-        l_layout.addRow("Лауреат:", self.laureate_combo)
+        l_layout.addRow("Кандидат (связка):", self.laureate_combo)
         self.initiator_combo = QComboBox()
-        l_layout.addRow("Инициатор:", self.initiator_combo)
+        l_layout.addRow("Инициатор (член НК):", self.initiator_combo)
+        self.btn_save_laureate_q = QPushButton("Добавить вопрос в бюллетень")
+        self.btn_save_laureate_q.clicked.connect(self._on_save_laureate_question)
+        l_layout.addRow(self.btn_save_laureate_q)
         sg_layout.addWidget(self.laureate_widget)
         self.laureate_widget.setVisible(False)
 
@@ -181,6 +190,16 @@ class BulletinPage(QWidget):
         self.btn_distribute = QPushButton("Рассылка")
         self.btn_distribute.clicked.connect(self._on_distribute)
         btn_row.addWidget(self.btn_distribute)
+
+        self.btn_export_dist = QPushButton("Экспорт рассылки (CSV)…")
+        self.btn_export_dist.setProperty("class", "btn-secondary")
+        self.btn_export_dist.clicked.connect(self._on_export_distribution)
+        btn_row.addWidget(self.btn_export_dist)
+
+        self.btn_export_dist_xlsx = QPushButton("Экспорт рассылки (XLSX)…")
+        self.btn_export_dist_xlsx.setProperty("class", "btn-secondary")
+        self.btn_export_dist_xlsx.clicked.connect(self._on_export_distribution_xlsx)
+        btn_row.addWidget(self.btn_export_dist_xlsx)
         btn_row.addStretch()
         sg_layout.addLayout(btn_row)
 
@@ -196,6 +215,11 @@ class BulletinPage(QWidget):
         self.btn_word_doc.setProperty("class", "btn-secondary")
         self.btn_word_doc.clicked.connect(self._on_word_document)
         doc_row.addWidget(self.btn_word_doc)
+
+        self.btn_docx = QPushButton("Word (DOCX)…")
+        self.btn_docx.setProperty("class", "btn-secondary")
+        self.btn_docx.clicked.connect(self._on_docx_document)
+        doc_row.addWidget(self.btn_docx)
         doc_row.addStretch()
         sg_layout.addLayout(doc_row)
 
@@ -216,8 +240,10 @@ class BulletinPage(QWidget):
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.table.setItem(i, 1, QTableWidgetItem(b.get("number", "")))
-            self.table.setItem(i, 2, QTableWidgetItem(b.get("start_date", "")))
-            self.table.setItem(i, 3, QTableWidgetItem(b.get("end_date", "")))
+            vs = b.get("voting_start") or b.get("start_date")
+            ve = b.get("voting_end") or b.get("end_date")
+            self.table.setItem(i, 2, QTableWidgetItem(str(vs or "")))
+            self.table.setItem(i, 3, QTableWidgetItem(str(ve or "")))
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -256,16 +282,38 @@ class BulletinPage(QWidget):
         if not is_section1:
             self._load_laureates()
 
+    def _current_bulletin_number(self) -> str | None:
+        if self._current_bulletin_id is None:
+            return None
+        for b in self._bulletins:
+            if b.get("id") == self._current_bulletin_id:
+                n = (b.get("number") or "").strip()
+                return n or None
+        return None
+
     def _load_laureates(self):
         self.laureate_combo.clear()
         self.initiator_combo.clear()
+        bn = self._current_bulletin_number()
+        if not bn:
+            self.laureate_section_hint.setText("Сначала выберите бюллетень в таблице.")
+            return
+        self.laureate_section_hint.setText(
+            f"Номер бюллетеня «{bn}». Связки подтягиваются из карточек лауреатов (кнопка «Связать награду»).",
+        )
         try:
-            laureates = self.api.get_laureates()
-            for la in laureates:
-                display = la.get("full_name", la.get("name", f"ID {la['id']}"))
-                self.laureate_combo.addItem(display, la["id"])
+            rows = self.api.get_laureate_awards_by_bulletin_number(bn)
+            for r in rows:
+                la_id = r.get("laureate_award_id")
+                if la_id is None:
+                    continue
+                fn = r.get("full_name") or "—"
+                an = r.get("award_name") or "—"
+                self.laureate_combo.addItem(f"{fn} — {an}", int(la_id))
+            if self.laureate_combo.count() == 0:
+                self.laureate_combo.addItem("— нет связок с этим номером —", None)
         except APIError:
-            pass
+            self.laureate_combo.addItem("— ошибка загрузки —", None)
         try:
             members = self.api.get_committee_members(is_active=True)
             for m in members:
@@ -314,6 +362,71 @@ class BulletinPage(QWidget):
             )
             QMessageBox.information(self, "Успех", "Вопрос сохранён.")
             self.question_edit.clear()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
+
+    def _on_save_laureate_question(self):
+        if self._current_bulletin_id is None:
+            return
+        la_id = self.laureate_combo.currentData()
+        if la_id is None:
+            QMessageBox.warning(
+                self,
+                "Вопрос",
+                "Нет выбранной связки лауреат–награда с этим номером бюллетеня.\n"
+                "Укажите номер при привязке награды к лауреату (карточки лауреатов).",
+            )
+            return
+        initiator_name = ""
+        ic = self.initiator_combo
+        if ic.currentIndex() >= 0:
+            initiator_name = ic.currentText().strip()
+        try:
+            ctx = self.api.get_laureate_award_context(int(la_id))
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить связку:\n{e}")
+            return
+        fn = ctx.get("full_name") or "—"
+        an = ctx.get("award_name") or "—"
+        qtext = (
+            f"Награждение: {fn}. Награда: {an}."
+            + (f" Инициатор: {initiator_name}." if initiator_name else "")
+        )
+        try:
+            full = self.api.get_bulletin_full(self._current_bulletin_id)
+            section_id = None
+            for s in full.get("sections", []):
+                if s.get("section_name") == self.SECTIONS[1]:
+                    section_id = s["id"]
+                    break
+            if section_id is None:
+                sec = self.api.add_bulletin_section(
+                    self._current_bulletin_id,
+                    {
+                        "bulletin_id": self._current_bulletin_id,
+                        "section_name": self.SECTIONS[1],
+                        "section_order": 1,
+                    },
+                )
+                section_id = sec["id"]
+                order = 0
+            else:
+                order = 0
+                for s in full.get("sections", []):
+                    if s.get("id") == section_id:
+                        order = len(s.get("questions") or [])
+                        break
+            self.api.add_section_question(
+                section_id,
+                {
+                    "section_id": section_id,
+                    "question_text": qtext,
+                    "question_order": order,
+                    "laureate_award_id": int(la_id),
+                    "initiator": initiator_name or None,
+                },
+            )
+            QMessageBox.information(self, "Успех", "Вопрос по кандидату добавлен в раздел «Награждение лауреатов».")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
 
@@ -377,6 +490,26 @@ class BulletinPage(QWidget):
             return
         export_html_for_word(self._last_doc_html, self, "бюллетень.html")
 
+    def _on_docx_document(self):
+        if self._current_bulletin_id is None:
+            QMessageBox.information(self, "Word (DOCX)", "Выберите бюллетень в таблице.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить бюллетень (DOCX)",
+            "бюллетень.docx",
+            "Документ Word (*.docx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.download_bulletin_docx(self._current_bulletin_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Word (DOCX)", "Файл сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать DOCX:\n{e}")
+
     def _on_distribute(self):
         if self._current_bulletin_id is None:
             return
@@ -401,3 +534,43 @@ class BulletinPage(QWidget):
             QMessageBox.information(self, "Успех", f"Бюллетень разослан {len(selected)} членам НК.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка рассылки:\n{e}")
+
+    def _on_export_distribution(self):
+        if self._current_bulletin_id is None:
+            QMessageBox.information(self, "Экспорт", "Выберите бюллетень в таблице.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить экспорт рассылки",
+            f"bulletin_{self._current_bulletin_id}_distributions.csv",
+            "CSV (*.csv);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.export_bulletin_distributions_csv(self._current_bulletin_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Экспорт", "CSV сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось выгрузить CSV:\n{e}")
+
+    def _on_export_distribution_xlsx(self):
+        if self._current_bulletin_id is None:
+            QMessageBox.information(self, "Экспорт", "Выберите бюллетень в таблице.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить экспорт рассылки (XLSX)",
+            f"bulletin_{self._current_bulletin_id}_distributions.xlsx",
+            "Excel (*.xlsx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.export_bulletin_distributions_xlsx(self._current_bulletin_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Экспорт", "XLSX сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось выгрузить XLSX:\n{e}")

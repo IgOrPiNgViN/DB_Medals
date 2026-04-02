@@ -134,7 +134,7 @@ def incomplete_lifecycle(db: Session = Depends(get_db)):
                 "award_name": la.award.name,
                 "incomplete_stages": [
                     "nomination", "voting", "decision",
-                    "registration", "ceremony", "publication",
+                    "registration", "consent_pd", "ceremony", "publication",
                 ],
             })
             continue
@@ -147,6 +147,8 @@ def incomplete_lifecycle(db: Session = Depends(get_db)):
             stages.append("decision")
         if not lc.registration_done:
             stages.append("registration")
+        if not getattr(lc, "consent_received", False):
+            stages.append("consent_pd")
         if not lc.ceremony_done:
             stages.append("ceremony")
         if not lc.publication_done:

@@ -178,6 +178,12 @@ class APIClient:
     def create_production(self, award_id: int, data: dict) -> dict:
         return self._post(f"/awards/{award_id}/productions", json=data)
 
+    def update_production(self, production_id: int, data: dict) -> dict:
+        return self._put(f"/awards/productions/{production_id}", json=data)
+
+    def delete_production(self, production_id: int) -> None:
+        self._delete(f"/awards/productions/{production_id}")
+
     # -- Inventory -------------------------------------------------------
 
     def get_inventory(self, award_id: int) -> list:
@@ -231,6 +237,16 @@ class APIClient:
         """ФИО лауреата и награда по ID связки (для печати удостоверения и т.п.)."""
         return self._get(f"/laureates/links/{laureate_award_id}")
 
+    def get_laureate_awards_by_bulletin_number(self, bulletin_number: str) -> list:
+        """Связки с заданным номером бюллетеня (для раздела бюллетеня «Награждение»)."""
+        bn = (bulletin_number or "").strip()
+        if not bn:
+            return []
+        return self._get(
+            "/laureates/laureate-awards/by-bulletin",
+            params={"bulletin_number": bn},
+        )
+
     # -- Lifecycle -------------------------------------------------------
 
     def get_laureate_lifecycle(self, laureate_award_id: int) -> dict:
@@ -241,6 +257,33 @@ class APIClient:
 
     def update_laureate_lifecycle(self, laureate_award_id: int, data: dict) -> dict:
         return self._put(f"/laureates/{laureate_award_id}/lifecycle", json=data)
+
+    # -- Consent PD ------------------------------------------------------
+
+    def get_consent_file_info(self, laureate_award_id: int) -> dict:
+        return self._get(f"/laureates/{laureate_award_id}/consent/file/info")
+
+    def download_consent_file(self, laureate_award_id: int) -> bytes:
+        return self._get_bytes(f"/laureates/{laureate_award_id}/consent/file")
+
+    def upload_consent_file(self, laureate_award_id: int, file_path: str) -> None:
+        import os
+
+        with open(file_path, "rb") as f:
+            resp = self._request(
+                "POST",
+                f"/laureates/{laureate_award_id}/consent/file",
+                files={"file": (os.path.basename(file_path), f)},
+            )
+            # 204 or JSON; ignore body
+            if resp.status_code >= 400:
+                raise APIError(resp.status_code, resp.text)
+
+    def delete_consent_file(self, laureate_award_id: int) -> None:
+        self._delete(f"/laureates/{laureate_award_id}/consent/file")
+
+    def generate_consent_doc(self, laureate_award_id: int) -> bytes:
+        return self._get_bytes(f"/laureates/{laureate_award_id}/consent/generate")
 
     # -- Laureate reports (on the laureates router) ----------------------
 
@@ -314,6 +357,9 @@ class APIClient:
         """Бюллетень с разделами и вопросами."""
         return self._get(f"/voting/bulletins/{bulletin_id}/full")
 
+    def download_bulletin_docx(self, bulletin_id: int) -> bytes:
+        return self._get_bytes(f"/voting/bulletins/{bulletin_id}/docx")
+
     def update_bulletin(self, bulletin_id: int, data: dict) -> dict:
         return self._put(f"/voting/bulletins/{bulletin_id}", json=data)
 
@@ -346,6 +392,12 @@ class APIClient:
     def get_bulletin_monitoring(self, bulletin_id: int) -> list:
         return self._get(f"/voting/bulletins/{bulletin_id}/monitoring")
 
+    def export_bulletin_distributions_csv(self, bulletin_id: int) -> bytes:
+        return self._get_bytes(f"/voting/bulletins/{bulletin_id}/distributions.csv")
+
+    def export_bulletin_distributions_xlsx(self, bulletin_id: int) -> bytes:
+        return self._get_bytes(f"/voting/bulletins/{bulletin_id}/distributions.xlsx")
+
     # -- Votes -----------------------------------------------------------
 
     def record_vote(self, question_id: int, data: dict) -> dict:
@@ -361,6 +413,9 @@ class APIClient:
     def get_protocols(self) -> list:
         return self._get("/voting/protocols")
 
+    def download_protocol_docx(self, protocol_id: int) -> bytes:
+        return self._get_bytes(f"/voting/protocols/{protocol_id}/docx")
+
     def create_protocol(self, bulletin_id: int, data: dict) -> dict:
         return self._post(f"/voting/bulletins/{bulletin_id}/protocol", json=data)
 
@@ -372,10 +427,22 @@ class APIClient:
     def create_protocol_extract(self, protocol_id: int, data: dict) -> dict:
         return self._post(f"/voting/protocols/{protocol_id}/extracts", json=data)
 
+    def list_protocol_extracts(self) -> list:
+        return self._get("/voting/extracts")
+
+    def download_extract_docx(self, extract_id: int) -> bytes:
+        return self._get_bytes(f"/voting/extracts/{extract_id}/docx")
+
     # -- PPZ Submissions -------------------------------------------------
 
     def create_ppz_submission(self, data: dict) -> dict:
         return self._post("/voting/ppz-submissions", json=data)
+
+    def list_ppz_submissions(self) -> list:
+        return self._get("/voting/ppz-submissions")
+
+    def download_ppz_submission_docx(self, ppz_id: int) -> bytes:
+        return self._get_bytes(f"/voting/ppz-submissions/{ppz_id}/docx")
 
     # ====================================================================
     #  REPORTS  /reports

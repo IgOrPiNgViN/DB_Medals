@@ -30,13 +30,20 @@ def main() -> int:
         from main import app
         from starlette.testclient import TestClient
 
-        tc = TestClient(app)
-        for path in (
-            "/api/reports/lifecycle-by-stage",
-            "/api/reports/site-export",
-        ):
-            r = tc.get(path)
-            assert r.status_code == 200, f"{path} -> {r.status_code}"
+        # Важно: lifespan (startup/shutdown) выполняется через контекстный менеджер.
+        with TestClient(app) as tc:
+            for path in (
+                "/api/reports/lifecycle-by-stage",
+                "/api/reports/site-export",
+            ):
+                r = tc.get(path)
+                assert r.status_code == 200, f"{path} -> {r.status_code}"
+            r = tc.get(
+                "/api/laureates/laureate-awards/by-bulletin",
+                params={"bulletin_number": "verify-test"},
+            )
+            assert r.status_code == 200, f"laureate-awards/by-bulletin -> {r.status_code}"
+            assert isinstance(r.json(), list), "laureate-awards/by-bulletin must return a list"
     except Exception as e:
         print(f"FAILED: {e}")
         return 1

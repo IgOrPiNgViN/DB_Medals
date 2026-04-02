@@ -150,6 +150,17 @@ class AwardProductionRead(AwardProductionBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AwardProductionUpdate(BaseModel):
+    component_type: Optional[ComponentType] = None
+    supplier: Optional[str] = None
+    quantity: Optional[int] = None
+    unit_price: Optional[float] = None
+    order_date: Optional[date] = None
+    delivery_date: Optional[date] = None
+    status: Optional[str] = None
+    details: Optional[str] = None
+
+
 # ── InventoryItem ────────────────────────────────────────────────────────────
 
 class InventoryItemBase(BaseModel):
@@ -171,3 +182,13 @@ class InventoryItemRead(InventoryItemBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryItemUpdate(BaseModel):
+    """Частичное обновление строки склада (без award_id / component_type)."""
+
+    total_count: Optional[int] = None
+    reserve_count: Optional[int] = None
+    issued_count: Optional[int] = None
+    available_count: Optional[int] = None
+    details: Optional[str] = None

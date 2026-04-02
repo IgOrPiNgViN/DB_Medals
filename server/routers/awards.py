@@ -14,8 +14,8 @@ from schemas.award import (
     AwardEstablishmentCreate, AwardEstablishmentRead,
     AwardDevelopmentCreate, AwardDevelopmentRead,
     AwardApprovalCreate, AwardApprovalRead,
-    AwardProductionCreate, AwardProductionRead,
-    InventoryItemCreate, InventoryItemRead,
+    AwardProductionCreate, AwardProductionRead, AwardProductionUpdate,
+    InventoryItemCreate, InventoryItemRead, InventoryItemUpdate,
 )
 
 router = APIRouter()
@@ -179,18 +179,55 @@ def warehouse_report(db: Session = Depends(get_db)):
     return result
 
 
+def _reconcile_inventory_counts(obj: InventoryItem) -> None:
+    total = obj.total_count or 0
+    reserve = obj.reserve_count or 0
+    issued = obj.issued_count or 0
+    if reserve + issued > total:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сумма резерва и выданного не может превышать общее количество",
+        )
+    obj.available_count = max(0, total - reserve - issued)
+
+
 @router.put("/inventory/{item_id}", response_model=InventoryItemRead)
 def update_inventory_item(
-    item_id: int, payload: InventoryItemCreate, db: Session = Depends(get_db),
+    item_id: int, payload: InventoryItemUpdate, db: Session = Depends(get_db),
 ):
     obj = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Inventory item not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
+    _reconcile_inventory_counts(obj)
     db.commit()
     db.refresh(obj)
     return obj
+
+
+@router.put("/productions/{production_id}", response_model=AwardProductionRead)
+def update_production(
+    production_id: int, payload: AwardProductionUpdate, db: Session = Depends(get_db),
+):
+    obj = db.query(AwardProduction).filter(AwardProduction.id == production_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Production record not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@router.delete("/productions/{production_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_production(production_id: int, db: Session = Depends(get_db)):
+    obj = db.query(AwardProduction).filter(AwardProduction.id == production_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Production record not found")
+    db.delete(obj)
+    db.commit()
+    return None
 
 
 @router.post("/{award_id}/images")
@@ -460,6 +497,7 @@ def create_inventory_item(
     _get_award_or_404(db, award_id)
     obj = InventoryItem(**payload.model_dump())
     obj.award_id = award_id
+    _reconcile_inventory_counts(obj)
     db.add(obj)
     db.commit()
     db.refresh(obj)

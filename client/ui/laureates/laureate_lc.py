@@ -3,9 +3,10 @@ import html as html_module
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QCheckBox, QDateEdit, QLineEdit, QComboBox, QPushButton,
-    QLabel, QMessageBox, QScrollArea, QFrame, QMenu,
+    QLabel, QMessageBox, QScrollArea, QFrame, QMenu, QFileDialog,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QDate
+from PyQt5.QtCore import pyqtSignal, Qt, QDate, QTimer
 from PyQt5.QtGui import QColor, QPalette
 
 from api_client import APIError
@@ -83,6 +84,177 @@ class StageWidget(QGroupBox):
         return d.toString("yyyy-MM-dd")
 
 
+class ConsentPDWidget(QGroupBox):
+    """Согласие на обработку персональных данных."""
+
+    changed = pyqtSignal()
+
+    def __init__(self, api_client, parent=None):
+        super().__init__("Согласие на обработку персональных данных", parent)
+        self.api = api_client
+        self._laureate_award_id: int | None = None
+        self._file_info: dict | None = None
+
+        lay = QFormLayout(self)
+        lay.setSpacing(6)
+
+        self.sent_date = QDateEdit()
+        self.sent_date.setCalendarPopup(True)
+        self.sent_date.setSpecialValueText("—")
+        self.sent_date.setDate(QDate.fromString("2000-01-01", "yyyy-MM-dd"))
+        self.sent_date.dateChanged.connect(self.changed.emit)
+        lay.addRow("Дата отправки на подпись:", self.sent_date)
+
+        self.received_date = QDateEdit()
+        self.received_date.setCalendarPopup(True)
+        self.received_date.setSpecialValueText("—")
+        self.received_date.setDate(QDate.fromString("2000-01-01", "yyyy-MM-dd"))
+        self.received_date.dateChanged.connect(self.changed.emit)
+        lay.addRow("Дата получения:", self.received_date)
+
+        self.received_cb = QCheckBox("Получено")
+        self.received_cb.stateChanged.connect(self.changed.emit)
+        lay.addRow(self.received_cb)
+
+        self.file_label = QLabel("Файл: —")
+        self.file_label.setWordWrap(True)
+        lay.addRow("Подписанный файл:", self.file_label)
+
+        btns = QHBoxLayout()
+        self.btn_generate = QPushButton("Сформировать согласие…")
+        self.btn_generate.clicked.connect(self._on_generate)
+        btns.addWidget(self.btn_generate)
+
+        self.btn_attach = QPushButton("Прикрепить файл…")
+        self.btn_attach.clicked.connect(self._on_attach)
+        btns.addWidget(self.btn_attach)
+
+        self.btn_download = QPushButton("Скачать…")
+        self.btn_download.clicked.connect(self._on_download)
+        btns.addWidget(self.btn_download)
+
+        self.btn_delete = QPushButton("Удалить файл")
+        self.btn_delete.setProperty("class", "btn-danger")
+        self.btn_delete.clicked.connect(self._on_delete)
+        btns.addWidget(self.btn_delete)
+
+        btns.addStretch()
+        lay.addRow(btns)
+
+        self._update_file_controls(False)
+
+    def set_context(self, laureate_award_id: int | None) -> None:
+        self._laureate_award_id = laureate_award_id
+        self.refresh_file_info()
+
+    def _update_file_controls(self, has_file: bool) -> None:
+        self.btn_download.setEnabled(has_file)
+        self.btn_delete.setEnabled(has_file)
+
+    def set_values(self, sent: str | None, received: str | None, is_received: bool | None) -> None:
+        self._set_date(self.sent_date, sent)
+        self._set_date(self.received_date, received)
+        self.received_cb.setChecked(bool(is_received))
+
+    def get_values(self) -> dict:
+        return {
+            "consent_sent_date": self._get_date(self.sent_date),
+            "consent_received_date": self._get_date(self.received_date),
+            "consent_received": self.received_cb.isChecked(),
+        }
+
+    def refresh_file_info(self) -> None:
+        self._file_info = None
+        if self._laureate_award_id is None:
+            self.file_label.setText("Файл: —")
+            self._update_file_controls(False)
+            return
+        try:
+            info = self.api.get_consent_file_info(self._laureate_award_id)
+        except APIError:
+            info = {"exists": False}
+        self._file_info = info
+        if info.get("exists"):
+            self.file_label.setText(f"Файл: {info.get('filename', '—')}")
+            self._update_file_controls(True)
+        else:
+            self.file_label.setText("Файл: —")
+            self._update_file_controls(False)
+
+    def _on_attach(self):
+        if self._laureate_award_id is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите файл согласия", "", "Все файлы (*.*)")
+        if not path:
+            return
+        try:
+            self.api.upload_consent_file(self._laureate_award_id, path)
+            self.refresh_file_info()
+            self.changed.emit()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{e.detail}")
+
+    def _on_download(self):
+        if self._laureate_award_id is None:
+            return
+        filename = "consent.pdf"
+        if self._file_info and self._file_info.get("filename"):
+            filename = str(self._file_info.get("filename"))
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", filename, "Все файлы (*.*)")
+        if not path:
+            return
+        try:
+            data = self.api.download_consent_file(self._laureate_award_id)
+            with open(path, "wb") as f:
+                f.write(data)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось скачать файл:\n{e.detail}")
+
+    def _on_delete(self):
+        if self._laureate_award_id is None:
+            return
+        try:
+            self.api.delete_consent_file(self._laureate_award_id)
+            self.refresh_file_info()
+            self.changed.emit()
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить файл:\n{e.detail}")
+
+    def _on_generate(self):
+        if self._laureate_award_id is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить сформированное согласие",
+            "Согласие ПД.docx",
+            "Документ Word (*.docx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.generate_consent_doc(self._laureate_award_id)
+            with open(path, "wb") as f:
+                f.write(data)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать согласие:\n{e.detail}")
+
+    @staticmethod
+    def _set_date(widget: QDateEdit, date_str: str | None) -> None:
+        if date_str:
+            d = QDate.fromString(str(date_str), "yyyy-MM-dd")
+            if d.isValid():
+                widget.setDate(d)
+                return
+        widget.setDate(QDate.fromString("2000-01-01", "yyyy-MM-dd"))
+
+    @staticmethod
+    def _get_date(widget: QDateEdit) -> str | None:
+        d = widget.date()
+        if d == QDate.fromString("2000-01-01", "yyyy-MM-dd"):
+            return None
+        return d.toString("yyyy-MM-dd")
+
+
 class LaureateLifecyclePage(QWidget):
     back_requested = pyqtSignal()
 
@@ -92,6 +264,9 @@ class LaureateLifecyclePage(QWidget):
         self._laureate_award_id: int | None = None
         self._lifecycle_exists = False
         self._dirty = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._autosave_silent)
         self._build_ui()
 
     def _build_ui(self):
@@ -107,6 +282,19 @@ class LaureateLifecyclePage(QWidget):
         self.title_label.setProperty("class", "page-title")
         top_bar.addWidget(self.title_label, 1)
         outer.addLayout(top_bar)
+
+        self.completeness_group = QGroupBox("Карта завершённости этапов")
+        cg_layout = QVBoxLayout(self.completeness_group)
+        self.completeness_table = QTableWidget(0, 2)
+        self.completeness_table.setHorizontalHeaderLabels(["Этап", "Статус"])
+        self.completeness_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.completeness_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.completeness_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.completeness_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.completeness_table.verticalHeader().setVisible(False)
+        self.completeness_table.setMaximumHeight(220)
+        cg_layout.addWidget(self.completeness_table)
+        outer.addWidget(self.completeness_group)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -128,6 +316,7 @@ class LaureateLifecyclePage(QWidget):
             ("signer_id", "Подписант", "combo"),
             ("certificate_number", "Номер удостоверения", "line"),
         ])
+        self.stage_consent_pd = ConsentPDWidget(self.api)
         self.stage_ceremony = StageWidget("5. Вручение", [
             ("place", "Место вручения", "line"),
         ])
@@ -142,6 +331,9 @@ class LaureateLifecyclePage(QWidget):
         for s in self._all_stages:
             s.changed.connect(self._mark_dirty)
             self._stages_layout.addWidget(s)
+
+        self.stage_consent_pd.changed.connect(self._mark_dirty)
+        self._stages_layout.insertWidget(4, self.stage_consent_pd)
 
         self._load_signer_combo()
 
@@ -194,6 +386,7 @@ class LaureateLifecyclePage(QWidget):
     def load_lifecycle(self, laureate_award_id: int):
         self._laureate_award_id = laureate_award_id
         self.title_label.setText(f"Жизненный цикл — связка #{laureate_award_id}")
+        self.stage_consent_pd.set_context(laureate_award_id)
         try:
             data = self.api.get_laureate_lifecycle(laureate_award_id)
             self._lifecycle_exists = True
@@ -202,6 +395,16 @@ class LaureateLifecyclePage(QWidget):
             if e.status_code == 404:
                 self._lifecycle_exists = False
                 self._reset_stages()
+                self.stage_consent_pd.set_context(laureate_award_id)
+                try:
+                    ctx = self.api.get_laureate_award_context(laureate_award_id)
+                    bn = (ctx.get("bulletin_number") or "").strip()
+                    if bn:
+                        w = self.stage_voting.extra_widgets.get("bulletin_number")
+                        if isinstance(w, QLineEdit) and not w.text().strip():
+                            w.setText(bn)
+                except APIError:
+                    pass
                 self.status_label.setText("Жизненный цикл ещё не создан. Заполните и сохраните.")
             else:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить ЖЦ:\n{e.detail}")
@@ -216,9 +419,12 @@ class LaureateLifecyclePage(QWidget):
                     w.clear()
                 elif isinstance(w, QComboBox):
                     w.setCurrentIndex(0)
+        self.stage_consent_pd.set_values(None, None, False)
+        self.stage_consent_pd.refresh_file_info()
         self.btn_reserve.setEnabled(True)
         self.btn_issue.setEnabled(True)
         self.status_label.clear()
+        self._refresh_completeness_map(None)
 
     def _populate(self, data: dict):
         self.stage_nomination.set_done(data.get("nomination_done", False))
@@ -252,6 +458,13 @@ class LaureateLifecyclePage(QWidget):
         self.stage_publication.set_date(data.get("publication_date"))
         self._set_extra_text(self.stage_publication, "source", data.get("publication_source"))
 
+        self.stage_consent_pd.set_values(
+            data.get("consent_sent_date"),
+            data.get("consent_received_date"),
+            data.get("consent_received"),
+        )
+        self.stage_consent_pd.refresh_file_info()
+
         reserved = data.get("inventory_reserved", False)
         issued = data.get("inventory_issued", False)
         self.btn_reserve.setEnabled(not reserved)
@@ -262,6 +475,34 @@ class LaureateLifecyclePage(QWidget):
         if issued:
             parts.append("Вручение учтено (списание)")
         self.status_label.setText("  |  ".join(parts) if parts else "")
+        self._refresh_completeness_map(data)
+
+    def _refresh_completeness_map(self, data: dict | None) -> None:
+        rows = [
+            ("1. Выдвижение", "nomination_done"),
+            ("2. Голосование", "voting_done"),
+            ("3. Решение", "decision_done"),
+            ("4. Оформление", "registration_done"),
+            ("Согласие ПД", "consent_received"),
+            ("5. Вручение", "ceremony_done"),
+            ("6. Опубликование", "publication_done"),
+        ]
+        self.completeness_table.setRowCount(len(rows))
+        for i, (title, key) in enumerate(rows):
+            self.completeness_table.setItem(i, 0, QTableWidgetItem(title))
+            done = False
+            if data is not None:
+                if key == "consent_received":
+                    done = bool(data.get("consent_received"))
+                else:
+                    done = bool(data.get(key))
+            status = "выполнено" if done else "не выполнено"
+            it = QTableWidgetItem(status)
+            if done:
+                it.setForeground(QColor(46, 125, 50))
+            else:
+                it.setForeground(QColor(198, 40, 40))
+            self.completeness_table.setItem(i, 1, it)
 
     @staticmethod
     def _set_extra_text(stage: StageWidget, key: str, value):
@@ -273,6 +514,10 @@ class LaureateLifecyclePage(QWidget):
 
     def _mark_dirty(self):
         self._dirty = True
+        self._autosave_timer.start(1500)
+
+    def _autosave_silent(self):
+        self._on_save(silent=True)
 
     def _collect_data(self) -> dict:
         data: dict = {}
@@ -308,6 +553,8 @@ class LaureateLifecyclePage(QWidget):
         data["publication_date"] = self.stage_publication.get_date()
         data["publication_source"] = self._get_extra_text(self.stage_publication, "source")
 
+        data.update(self.stage_consent_pd.get_values())
+
         return data
 
     @staticmethod
@@ -320,7 +567,7 @@ class LaureateLifecyclePage(QWidget):
             return val or None
         return None
 
-    def _on_save(self):
+    def _on_save(self, silent: bool = False):
         if self._laureate_award_id is None:
             return
         data = self._collect_data()
@@ -332,9 +579,11 @@ class LaureateLifecyclePage(QWidget):
                 self._lifecycle_exists = True
             self._populate(result)
             self._dirty = False
-            QMessageBox.information(self, "Сохранено", "Жизненный цикл обновлён.")
+            if not silent:
+                QMessageBox.information(self, "Сохранено", "Жизненный цикл обновлён.")
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить ЖЦ:\n{e.detail}")
+            if not silent:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить ЖЦ:\n{e.detail}")
 
     def _on_reserve(self):
         if self._laureate_award_id is None:
@@ -426,6 +675,10 @@ class LaureateLifecyclePage(QWidget):
             export_html_to_pdf(html, self, "udostoverenie.pdf")
 
     def confirm_quit_application(self) -> bool:
+        if not self._dirty:
+            return True
+        # автосохранение перед выходом/переходом
+        self._on_save(silent=True)
         if not self._dirty:
             return True
         reply = QMessageBox.question(

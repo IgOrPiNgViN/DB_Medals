@@ -51,6 +51,18 @@ from models.laureate import (  # noqa: E402
 )
 from models.committee import CommitteeMember  # noqa: E402
 from models.access_mirror import AccessMirrorRow  # noqa: E402
+from models.voting import (  # noqa: E402
+    Bulletin,
+    BulletinSection,
+    BulletinQuestion,
+    BulletinDistribution,
+    Vote,
+    VoteValue,
+    Protocol,
+    ProtocolStatus,
+    ProtocolExtract,
+    PPZSubmission,
+)
 
 
 def _parse_bool(v) -> bool:
@@ -79,6 +91,18 @@ def _parse_date(v) -> date | None:
         return None
 
 
+def _parse_dt(v) -> datetime | None:
+    if v is None or str(v).strip() == "":
+        return None
+    s = str(v).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _norm_name(s) -> str:
     if not s:
         return ""
@@ -90,6 +114,222 @@ def _read_dict_rows(csv_path: Path) -> list[dict]:
         return []
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f, delimiter=";"))
+
+
+def _first(row: dict, *keys: str):
+    for k in keys:
+        if k in row and row.get(k) not in (None, ""):
+            return row.get(k)
+    return None
+
+
+def _find_csv(csv_dir: Path, *stems: str) -> Path | None:
+    for stem in stems:
+        p = csv_dir / f"{stem}.csv"
+        if p.is_file():
+            return p
+    # fallback: case-insensitive match
+    want = {s.lower() for s in stems}
+    for p in csv_dir.glob("*.csv"):
+        if p.stem.lower() in want:
+            return p
+    return None
+
+
+def _import_voting(db, csv_dir: Path) -> None:
+    """
+    Опциональный импорт голосования, если в CSV есть соответствующие таблицы.
+    Поддерживает разные имена файлов/колонок (рус/англ).
+    """
+    # ── Bulletins ────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "bulletins", "Бюллетени", "Бюллетень", "БюллетениНК", "Bulletins")
+    bulletins_by_id: dict[int, Bulletin] = {}
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            bid = _parse_int(_first(row, "id", "ID", "Код", "КодБюллетеня"), default=0)
+            number = str(_first(row, "number", "Номер", "НомерБюллетеня") or "").strip()
+            if not number and bid == 0:
+                continue
+            obj = Bulletin(
+                number=number or str(bid),
+                voting_start=_parse_date(_first(row, "voting_start", "start_date", "ДатаНачала", "Дата начала")),
+                voting_end=_parse_date(_first(row, "voting_end", "end_date", "ДатаОкончания", "Дата окончания")),
+                postal_address=str(_first(row, "postal_address", "Адрес", "Почтовый адрес") or "").strip() or None,
+            )
+            if bid:
+                obj.id = bid
+            db.add(obj)
+            bulletins_by_id[obj.id] = obj
+        db.flush()
+        print(f"  voting: bulletins imported from {p.name}: {len(rows)}")
+
+    # ── Sections ──────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "bulletin_sections", "РазделыБюллетеня", "BulletinSections")
+    sections_by_id: dict[int, BulletinSection] = {}
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            sid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            bulletin_id = _parse_int(_first(row, "bulletin_id", "КодБюллетеня", "BulletinID"), default=0)
+            if not bulletin_id:
+                continue
+            name = str(_first(row, "section_name", "Название", "Раздел") or "").strip()
+            order = _parse_int(_first(row, "section_order", "Порядок", "Номер"), default=0)
+            obj = BulletinSection(bulletin_id=bulletin_id, section_name=name, section_order=order)
+            if sid:
+                obj.id = sid
+            db.add(obj)
+            sections_by_id[obj.id] = obj
+        db.flush()
+        print(f"  voting: sections imported from {p.name}: {len(rows)}")
+
+    # ── Questions ──────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "bulletin_questions", "ВопросыБюллетеня", "BulletinQuestions")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            qid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            section_id = _parse_int(_first(row, "section_id", "КодРаздела", "SectionID"), default=0)
+            if not section_id:
+                continue
+            text_q = str(_first(row, "question_text", "Текст", "Вопрос") or "").strip()
+            order = _parse_int(_first(row, "question_order", "Порядок", "Номер"), default=0)
+            laureate_award_id = _parse_int(_first(row, "laureate_award_id", "КодСвязки", "LaureateAwardID"), default=0) or None
+            initiator = str(_first(row, "initiator", "Инициатор") or "").strip() or None
+            obj = BulletinQuestion(
+                section_id=section_id,
+                question_text=text_q,
+                question_order=order,
+                laureate_award_id=laureate_award_id,
+                initiator=initiator,
+            )
+            if qid:
+                obj.id = qid
+            db.add(obj)
+        db.flush()
+        print(f"  voting: questions imported from {p.name}: {len(rows)}")
+
+    # ── Distributions ──────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "bulletin_distributions", "РассылкаБюллетеней", "BulletinDistributions")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            did = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            bulletin_id = _parse_int(_first(row, "bulletin_id", "КодБюллетеня", "BulletinID"), default=0)
+            member_id = _parse_int(_first(row, "member_id", "КодЧленаНК", "MemberID"), default=0)
+            if not bulletin_id or not member_id:
+                continue
+            obj = BulletinDistribution(
+                bulletin_id=bulletin_id,
+                member_id=member_id,
+                sent=_parse_bool(_first(row, "sent", "Отправлено")),
+                sent_date=_parse_date(_first(row, "sent_date", "ДатаОтправки")),
+                received=_parse_bool(_first(row, "received", "Получено")),
+                received_date=_parse_date(_first(row, "received_date", "ДатаПолучения")),
+            )
+            if did:
+                obj.id = did
+            db.add(obj)
+        db.flush()
+        print(f"  voting: distributions imported from {p.name}: {len(rows)}")
+
+    # ── Votes ──────────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "votes", "Голоса", "Votes")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            vid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            question_id = _parse_int(_first(row, "question_id", "КодВопроса", "QuestionID"), default=0)
+            member_id = _parse_int(_first(row, "member_id", "КодЧленаНК", "MemberID"), default=0)
+            if not question_id or not member_id:
+                continue
+            v = _first(row, "value", "Значение", "vote_for", "За")
+            if isinstance(v, str) and v.strip().lower() in ("against", "против", "false", "0", "нет"):
+                value = VoteValue.AGAINST
+            elif v is not None and str(v).strip().lower() in ("for", "за", "true", "1", "да"):
+                value = VoteValue.FOR
+            else:
+                value = VoteValue.FOR
+            voted_at = _parse_dt(_first(row, "voted_at", "ДатаГолоса"))
+            obj = Vote(question_id=question_id, member_id=member_id, value=value)
+            if voted_at:
+                obj.voted_at = voted_at
+            if vid:
+                obj.id = vid
+            db.add(obj)
+        db.flush()
+        print(f"  voting: votes imported from {p.name}: {len(rows)}")
+
+    # ── Protocols ──────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "protocols", "Протоколы", "Protocols")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            pid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            bulletin_id = _parse_int(_first(row, "bulletin_id", "КодБюллетеня", "BulletinID"), default=0)
+            number = str(_first(row, "number", "Номер") or "").strip()
+            if not bulletin_id or not number:
+                continue
+            st = str(_first(row, "status", "Статус") or "").strip().lower()
+            status = ProtocolStatus.SIGNED if st in ("signed", "подписан") else ProtocolStatus.DRAFT
+            obj = Protocol(
+                bulletin_id=bulletin_id,
+                number=number,
+                date=_parse_date(_first(row, "date", "Дата")),
+                status=status,
+                details=str(_first(row, "details", "Детали", "Описание") or "").strip() or None,
+            )
+            if pid:
+                obj.id = pid
+            db.add(obj)
+        db.flush()
+        print(f"  voting: protocols imported from {p.name}: {len(rows)}")
+
+    # ── Extracts ───────────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "protocol_extracts", "Выписки", "ProtocolExtracts")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            eid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            protocol_id = _parse_int(_first(row, "protocol_id", "КодПротокола", "ProtocolID"), default=0)
+            laureate_award_id = _parse_int(_first(row, "laureate_award_id", "КодСвязки", "LaureateAwardID"), default=0)
+            if not protocol_id or not laureate_award_id:
+                continue
+            obj = ProtocolExtract(
+                protocol_id=protocol_id,
+                laureate_award_id=laureate_award_id,
+                extract_date=_parse_date(_first(row, "extract_date", "Дата")),
+                details=str(_first(row, "details", "Детали", "Описание") or "").strip() or None,
+            )
+            if eid:
+                obj.id = eid
+            db.add(obj)
+        db.flush()
+        print(f"  voting: extracts imported from {p.name}: {len(rows)}")
+
+    # ── PPZ submissions ────────────────────────────────────────────────
+    p = _find_csv(csv_dir, "ppz_submissions", "ПредставленияППЗ", "PPZSubmissions")
+    if p:
+        rows = _read_dict_rows(p)
+        for row in rows:
+            pid = _parse_int(_first(row, "id", "ID", "Код"), default=0)
+            laureate_award_id = _parse_int(_first(row, "laureate_award_id", "КодСвязки", "LaureateAwardID"), default=0)
+            auth_id = _parse_int(_first(row, "authorized_member_id", "КодУполномоченного", "AuthorizedMemberID"), default=0)
+            if not laureate_award_id or not auth_id:
+                continue
+            obj = PPZSubmission(
+                laureate_award_id=laureate_award_id,
+                authorized_member_id=auth_id,
+                submission_number=str(_first(row, "submission_number", "Номер") or "").strip() or None,
+                date=_parse_date(_first(row, "date", "Дата")),
+                details=str(_first(row, "details", "Детали", "Описание") or "").strip() or None,
+            )
+            if pid:
+                obj.id = pid
+            db.add(obj)
+        db.flush()
+        print(f"  voting: ppz submissions imported from {p.name}: {len(rows)}")
 
 
 def _characteristic_cell_value(val) -> str | None:
@@ -443,6 +683,10 @@ def main() -> None:
             )
 
         n_mirror = _mirror_all_csv(db, csv_dir)
+
+        # Опционально: голосование (если таблицы присутствуют в CSV)
+        _import_voting(db, csv_dir)
+
         db.commit()
         print(
             f"Импорт завершён из {csv_dir}:\n"

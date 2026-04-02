@@ -278,6 +278,8 @@ class MainWindow(QMainWindow):
         self._award_detail_idx = self.stack.addWidget(self._award_detail)
 
     def _open_award_detail(self, award_id: int):
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
         self._award_detail.load_award(award_id)
         self.stack.setCurrentIndex(self._award_detail_idx)
         for btn in self._page_buttons:
@@ -301,6 +303,8 @@ class MainWindow(QMainWindow):
         self._lc_return_page: str = "laureate_cards"
 
     def _open_laureate_detail(self, laureate_id: int):
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
         self._laureate_detail.load_laureate(laureate_id)
         self.stack.setCurrentIndex(self._laureate_detail_idx)
         for btn in self._page_buttons:
@@ -313,6 +317,8 @@ class MainWindow(QMainWindow):
             page.refresh_data()
 
     def _open_laureate_lifecycle(self, laureate_award_id: int):
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
         current_idx = self.stack.currentIndex()
         if current_idx == self._laureate_detail_idx:
             self._lc_return_page = "__detail__"
@@ -342,6 +348,8 @@ class MainWindow(QMainWindow):
         self._member_card_idx = self.stack.addWidget(self._member_card)
 
     def _open_member_card(self, member_id: int):
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
         self._member_card.load_member(member_id)
         self.stack.setCurrentIndex(self._member_card_idx)
         for btn in self._page_buttons:
@@ -355,7 +363,22 @@ class MainWindow(QMainWindow):
 
     # ── page switching ---------------------------------------------------
 
+    def _maybe_confirm_unsaved_on_leave(self) -> bool:
+        """Prevent losing edits when opening another page/dialog."""
+        current_idx = self.stack.currentIndex()
+        if current_idx == getattr(self, "_award_detail_idx", -1):
+            return self._award_detail.confirm_quit_application()
+        if current_idx == getattr(self, "_laureate_detail_idx", -1):
+            return self._laureate_detail.confirm_quit_application()
+        if current_idx == getattr(self, "_laureate_lc_idx", -1):
+            return self._laureate_lc.confirm_quit_application()
+        return True
+
     def _select_page(self, page_key: str):
+        # Guard: do not lose unsaved changes when navigating via sidebar.
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
+
         idx = self._pages.get(page_key)
         if idx is None:
             return

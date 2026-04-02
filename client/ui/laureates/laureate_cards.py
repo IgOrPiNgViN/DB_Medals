@@ -118,7 +118,14 @@ class LinkAwardDialog(QDialog):
         self.assigned_date.setDate(QDate.currentDate())
         layout.addRow("Дата назначения:", self.assigned_date)
 
+        self.bulletin_pick = QComboBox()
+        self.bulletin_pick.addItem("— выбрать из списка бюллетеней —", None)
+        self._load_bulletins()
+        self.bulletin_pick.currentIndexChanged.connect(self._on_bulletin_pick)
+        layout.addRow("Бюллетень:", self.bulletin_pick)
+
         self.bulletin_number = QLineEdit()
+        self.bulletin_number.setPlaceholderText("Номер как в модуле «Бюллетени»")
         layout.addRow("Номер бюллетеня:", self.bulletin_number)
 
         self.initiator = QLineEdit()
@@ -142,6 +149,22 @@ class LinkAwardDialog(QDialog):
                 self.award_combo.addItem(a.get("name", f"#{a['id']}"), a["id"])
         except APIError as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить награды:\n{e.detail}")
+
+    def _load_bulletins(self):
+        try:
+            bulletins = self.api.get_bulletins()
+            for b in bulletins:
+                num = (b.get("number") or "").strip()
+                if not num:
+                    continue
+                self.bulletin_pick.addItem(f"№ {num}", num)
+        except APIError:
+            pass
+
+    def _on_bulletin_pick(self, _idx: int):
+        data = self.bulletin_pick.currentData()
+        if data:
+            self.bulletin_number.setText(str(data))
 
     def _on_save(self):
         if self.award_combo.count() == 0:

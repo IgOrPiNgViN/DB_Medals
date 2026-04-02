@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Text, Date, DateTime,
-    Boolean, ForeignKey, Enum as SAEnum,
+    Boolean, ForeignKey, Enum as SAEnum, LargeBinary,
 )
 from sqlalchemy.orm import relationship
 from database import Base
@@ -102,7 +102,28 @@ class LaureateLifecycle(Base):
     inventory_reserved = Column(Boolean, default=False)
     inventory_issued = Column(Boolean, default=False)
 
+    consent_sent_date = Column(Date)
+    consent_received_date = Column(Date)
+    consent_received = Column(Boolean, default=False)
+
     laureate_award = relationship("LaureateAward", back_populates="lifecycle")
     registration_signer = relationship(
         "CommitteeMember", foreign_keys=[registration_signer_id],
     )
+
+
+class LaureateConsentFile(Base):
+    """Файл подписанного согласия на обработку персональных данных."""
+
+    __tablename__ = "laureate_consent_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    laureate_award_id = Column(
+        Integer, ForeignKey("laureate_awards.id"), nullable=False, unique=True,
+    )
+    filename = Column(String(500), nullable=False)
+    content_type = Column(String(200))
+    data = Column(LargeBinary, nullable=False)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    laureate_award = relationship("LaureateAward")
