@@ -1,6 +1,7 @@
 from datetime import date as dt_date
 import re
 from io import BytesIO
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
@@ -58,11 +59,17 @@ def _safe_filename(s: str) -> str:
     return s or "document"
 
 
+def _content_disposition(filename: str) -> str:
+    """RFC 5987 — поддержка кириллицы в заголовке Content-Disposition."""
+    encoded = quote(filename, safe="")
+    return f"attachment; filename*=UTF-8''{encoded}"
+
+
 def _docx_response(doc: Document, filename: str) -> Response:
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {"Content-Disposition": _content_disposition(filename)}
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

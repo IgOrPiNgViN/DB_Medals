@@ -1,0 +1,409 @@
+@startuml ER_awards_db
+
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 80
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+
+skinparam entity {
+  BackgroundColor #FAFAFA
+  BorderColor #555555
+  FontColor #222222
+  HeaderBackgroundColor #4A90D9
+  HeaderFontColor #FFFFFF
+  HeaderFontStyle bold
+}
+
+' ─────────────────────────────────────────
+' ENUMS (справочники)
+' ─────────────────────────────────────────
+
+entity "<<enum>>\nawardtype" as awardtype {
+  MEDAL
+  PPZ
+  DISTINCTION
+  DECORATION
+}
+
+entity "<<enum>>\napprovaltype" as approvaltype {
+  NK
+  HERALDISTS
+  RELATIVES
+  SPONSORS
+}
+
+entity "<<enum>>\ncomponenttype" as componenttype {
+  MEDAL | BADGE | CUFFLINKS
+  PENDANT | PPZ | BOX
+  CERTIFICATE | CASE
+}
+
+entity "<<enum>>\nlaureatecategory" as laureatecategory {
+  EMPLOYEE | VETERAN
+  UNIVERSITY | NII
+  NONPROFIT | COMMERCIAL
+}
+
+entity "<<enum>>\nbulletintype" as bulletintype {
+  MEDAL
+  PPZ
+}
+
+entity "<<enum>>\nbulletinstatus" as bulletinstatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+entity "<<enum>>\nprotocolstatus" as protocolstatus {
+  DRAFT
+  SIGNED
+}
+
+entity "<<enum>>\nsigningrole" as signingrole {
+  SIGNER
+  AUTHORIZED
+}
+
+entity "<<enum>>\nvotevalue" as votevalue {
+  FOR
+  AGAINST
+}
+
+' ─────────────────────────────────────────
+' НАГРАДЫ
+' ─────────────────────────────────────────
+
+entity "awards" {
+  * id : integer <<PK>>
+  --
+  * name : varchar(500)
+  * award_type : awardtype
+  description : text
+  image_front : bytea
+  image_back : bytea
+  created_at : timestamp
+}
+
+entity "award_characteristics" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK>>
+  * field_name : varchar(255)
+  field_value : text
+}
+
+entity "award_establishments" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK, UQ>>
+  establishment_date : date
+  document_number : varchar(100)
+  document_date : date
+  initiator : varchar(500)
+  details : text
+}
+
+entity "award_developments" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK, UQ>>
+  developer : varchar(500)
+  start_date : date
+  end_date : date
+  status : varchar(100)
+  details : text
+}
+
+entity "award_approvals" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK>>
+  * approval_type : approvaltype
+  approver_name : varchar(500)
+  status : varchar(100)
+  date : date
+  details : text
+}
+
+entity "award_productions" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK>>
+  * component_type : componenttype
+  supplier : varchar(500)
+  quantity : integer
+  unit_price : double precision
+  order_date : date
+  delivery_date : date
+  status : varchar(100)
+  details : text
+}
+
+entity "inventory_items" {
+  * id : integer <<PK>>
+  --
+  * award_id : integer <<FK>>
+  * component_type : componenttype
+  total_count : integer
+  reserve_count : integer
+  issued_count : integer
+  available_count : integer
+  details : text
+  updated_at : timestamp
+}
+
+' ─────────────────────────────────────────
+' ЛАУРЕАТЫ
+' ─────────────────────────────────────────
+
+entity "laureates" {
+  * id : integer <<PK>>
+  --
+  * full_name : varchar(500)
+  category : laureatecategory
+  position : varchar(500)
+  organization : varchar(500)
+  phone : varchar(100)
+  email : varchar(255)
+  address : text
+  notes : text
+  created_at : timestamp
+}
+
+entity "laureate_awards" {
+  * id : integer <<PK>>
+  --
+  * laureate_id : integer <<FK>>
+  * award_id : integer <<FK>>
+  assigned_date : date
+  bulletin_number : varchar(50)
+  initiator : varchar(500)
+  status : varchar(100)
+}
+
+entity "laureate_lifecycles" {
+  * id : integer <<PK>>
+  --
+  * laureate_award_id : integer <<FK, UQ>>
+  nomination_date : date
+  nomination_initiator : varchar(500)
+  nomination_done : boolean
+  voting_date : date
+  voting_bulletin_number : varchar(50)
+  voting_done : boolean
+  decision_date : date
+  decision_protocol_number : varchar(50)
+  decision_done : boolean
+  registration_date : date
+  registration_signer_id : integer <<FK>>
+  registration_certificate_number : varchar(100)
+  registration_done : boolean
+  ceremony_date : date
+  ceremony_place : varchar(500)
+  ceremony_done : boolean
+  publication_date : date
+  publication_source : varchar(500)
+  publication_done : boolean
+  inventory_reserved : boolean
+  inventory_issued : boolean
+  consent_sent_date : date
+  consent_received_date : date
+  consent_received : boolean
+}
+
+entity "laureate_consent_files" {
+  * id : integer <<PK>>
+  --
+  * laureate_award_id : integer <<FK, UQ>>
+  * filename : varchar(500)
+  content_type : varchar(200)
+  * data : bytea
+  uploaded_at : timestamp
+}
+
+' ─────────────────────────────────────────
+' НАГРАДНОЙ КОМИТЕТ
+' ─────────────────────────────────────────
+
+entity "committee_members" {
+  * id : integer <<PK>>
+  --
+  * full_name : varchar(500)
+  position : varchar(500)
+  organization : varchar(500)
+  phone : varchar(100)
+  email : varchar(255)
+  is_active : boolean
+  notes : text
+  created_at : timestamp
+}
+
+entity "member_signing_rights" {
+  * id : integer <<PK>>
+  --
+  * member_id : integer <<FK>>
+  * award_id : integer <<FK>>
+  * role : signingrole
+  assigned_date : date
+}
+
+' ─────────────────────────────────────────
+' ГОЛОСОВАНИЕ
+' ─────────────────────────────────────────
+
+entity "bulletins" {
+  * id : integer <<PK>>
+  --
+  * number : varchar(50) <<UQ>>
+  * bulletin_type : bulletintype
+  voting_start : date
+  voting_end : date
+  postal_address : text
+  status : bulletinstatus
+  created_at : timestamp
+}
+
+entity "bulletin_sections" {
+  * id : integer <<PK>>
+  --
+  * bulletin_id : integer <<FK>>
+  * section_name : varchar(500)
+  section_order : integer
+}
+
+entity "bulletin_questions" {
+  * id : integer <<PK>>
+  --
+  * section_id : integer <<FK>>
+  * question_text : text
+  question_order : integer
+  laureate_award_id : integer <<FK, NULL>>
+  initiator : varchar(500)
+}
+
+entity "bulletin_distributions" {
+  * id : integer <<PK>>
+  --
+  * bulletin_id : integer <<FK>>
+  * member_id : integer <<FK>>
+  sent : boolean
+  sent_date : date
+  received : boolean
+  received_date : date
+}
+
+entity "votes" {
+  * id : integer <<PK>>
+  --
+  * question_id : integer <<FK>>
+  * member_id : integer <<FK>>
+  value : votevalue
+  voted_at : timestamp
+}
+
+entity "protocols" {
+  * id : integer <<PK>>
+  --
+  * bulletin_id : integer <<FK, UQ>>
+  * number : varchar(50)
+  date : date
+  status : protocolstatus
+  details : text
+  created_at : timestamp
+}
+
+entity "protocol_extracts" {
+  * id : integer <<PK>>
+  --
+  * protocol_id : integer <<FK>>
+  * laureate_award_id : integer <<FK>>
+  extract_date : date
+  details : text
+}
+
+entity "ppz_submissions" {
+  * id : integer <<PK>>
+  --
+  * laureate_award_id : integer <<FK>>
+  * authorized_member_id : integer <<FK>>
+  submission_number : varchar(50)
+  date : date
+  details : text
+}
+
+' ─────────────────────────────────────────
+' ЗЕРКАЛО ACCESS
+' ─────────────────────────────────────────
+
+entity "access_mirror_rows" {
+  * id : integer <<PK>>
+  --
+  * table_name : varchar(512)
+  * row_index : integer
+  * data : jsonb
+}
+
+' ─────────────────────────────────────────
+' СВЯЗИ — НАГРАДЫ
+' ─────────────────────────────────────────
+
+awards ||--o{ award_characteristics      : "award_id"
+awards ||--o| award_establishments       : "award_id"
+awards ||--o| award_developments         : "award_id"
+awards ||--o{ award_approvals            : "award_id"
+awards ||--o{ award_productions          : "award_id"
+awards ||--o{ inventory_items            : "award_id"
+awards ||--o{ member_signing_rights      : "award_id"
+
+' ─────────────────────────────────────────
+' СВЯЗИ — ЛАУРЕАТЫ
+' ─────────────────────────────────────────
+
+laureates       ||--o{ laureate_awards          : "laureate_id"
+awards          ||--o{ laureate_awards          : "award_id"
+laureate_awards ||--o| laureate_lifecycles      : "laureate_award_id"
+laureate_awards ||--o| laureate_consent_files   : "laureate_award_id"
+laureate_awards ||--o{ protocol_extracts        : "laureate_award_id"
+laureate_awards ||--o{ ppz_submissions          : "laureate_award_id"
+laureate_awards ||--o{ bulletin_questions       : "laureate_award_id"
+
+committee_members ||--o{ laureate_lifecycles    : "registration_signer_id"
+
+' ─────────────────────────────────────────
+' СВЯЗИ — НК
+' ─────────────────────────────────────────
+
+committee_members ||--o{ member_signing_rights  : "member_id"
+committee_members ||--o{ bulletin_distributions : "member_id"
+committee_members ||--o{ votes                  : "member_id"
+committee_members ||--o{ ppz_submissions        : "authorized_member_id"
+
+' ─────────────────────────────────────────
+' СВЯЗИ — ГОЛОСОВАНИЕ
+' ─────────────────────────────────────────
+
+bulletins         ||--o{ bulletin_sections      : "bulletin_id"
+bulletins         ||--o{ bulletin_distributions : "bulletin_id"
+bulletins         ||--o| protocols              : "bulletin_id"
+bulletin_sections ||--o{ bulletin_questions     : "section_id"
+bulletin_questions ||--o{ votes                 : "question_id"
+protocols         ||--o{ protocol_extracts      : "protocol_id"
+
+' ─────────────────────────────────────────
+' СВЯЗИ ENUM
+' ─────────────────────────────────────────
+
+awards             }o--|| awardtype
+award_approvals    }o--|| approvaltype
+award_productions  }o--|| componenttype
+inventory_items    }o--|| componenttype
+laureates          }o--|| laureatecategory
+bulletins          }o--|| bulletintype
+bulletins          }o--|| bulletinstatus
+protocols          }o--|| protocolstatus
+member_signing_rights }o--|| signingrole
+votes              }o--|| votevalue
+
+@enduml

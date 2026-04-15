@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONUTF8=1 pg_dump -h localhost -p 5432 -d awards_db -U postgres -s -F p -E UTF-8)",
+      "Bash(where pg_dump)",
+      "Read(//c/Program Files/PostgreSQL//**)",
+      "Bash(PGPASSWORD=1234 \"/c/Program Files/PostgreSQL/18/bin/pg_dump\" -h localhost -p 5432 -d awards_db -U postgres -s -F p -E UTF-8)",
+      "Bash(PGPASSWORD=1234 \"/c/Program Files/PostgreSQL/18/bin/pg_dump\" -h localhost -p 5432 -d awards_db -U postgres -s -F p -E UTF-8 -f \"/c/Users/Игорь/Desktop/БД лауреаты/.claude/worktrees/zen-mayer/migration/pg_schema.sql\")"
+    ]
+  }
+}
