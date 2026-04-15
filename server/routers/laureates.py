@@ -1,6 +1,7 @@
 import os
 import re
 from io import BytesIO
+from urllib.parse import quote
 
 from docx import Document
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
@@ -356,7 +357,8 @@ def download_consent_file(laureate_award_id: int, db: Session = Depends(get_db))
     ).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Consent file not found")
-    headers = {"Content-Disposition": f'attachment; filename="{obj.filename}"'}
+    encoded = quote(obj.filename, safe="")
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
     return Response(
         content=obj.data,
         media_type=obj.content_type or "application/octet-stream",
@@ -442,7 +444,8 @@ def generate_consent_docx(laureate_award_id: int, db: Session = Depends(get_db))
 
     safe_name = re.sub(r"[\\\\/:*?\"<>|]+", "_", full_name).strip() or "laureate"
     filename = f"Согласие ПД — {safe_name}.docx"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    encoded = quote(filename, safe="")
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
