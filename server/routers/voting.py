@@ -378,7 +378,7 @@ def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
         MonitoringEntry(
             distribution_id=d.id,
             member_id=d.member_id,
-            member_name=d.member.full_name,
+            member_name=d.member.full_name if d.member else "",
             sent=d.sent or False,
             sent_date=d.sent_date,
             received=d.received or False,
@@ -399,6 +399,15 @@ def record_vote(
     question_id: int, payload: VoteCreate, db: Session = Depends(get_db),
 ):
     _get_question_or_404(db, question_id)
+    existing = db.query(Vote).filter(
+        Vote.question_id == question_id,
+        Vote.member_id == payload.member_id,
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Member already voted for this question",
+        )
     obj = Vote(**payload.model_dump())
     obj.question_id = question_id
     db.add(obj)
@@ -430,7 +439,7 @@ def vote_results(bulletin_id: int, db: Session = Depends(get_db)):
     results = []
     for q in questions:
         total = len(q.votes)
-        votes_for = sum(1 for v in q.votes if v.value.value == "for")
+        votes_for = sum(1 for v in q.votes if v.value is not None and v.value.value == "for")
         votes_against = total - votes_for
         pct = (votes_for / total * 100) if total > 0 else 0.0
         results.append(

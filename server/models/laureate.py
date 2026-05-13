@@ -5,7 +5,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class LaureateCategory(str, enum.Enum):
@@ -29,7 +33,7 @@ class Laureate(Base):
     email = Column(String(255))
     address = Column(Text)
     notes = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     awards = relationship(
         "LaureateAward", back_populates="laureate", cascade="all, delete-orphan",
@@ -44,14 +48,19 @@ class LaureateAward(Base):
     laureate_id = Column(Integer, ForeignKey("laureates.id"), nullable=False)
     award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
     assigned_date = Column(Date)
-    bulletin_number = Column(String(50))
     initiator = Column(String(500))
-    status = Column(String(100), default="assigned")
+    # status хранится как текст для обратной совместимости;
+    # status_enum (laureateawardstatus) добавляется миграцией db_optimize.sql
+    status = Column(String(100), default="nominated")
 
     laureate = relationship("Laureate", back_populates="awards")
     award = relationship("Award", back_populates="laureate_awards")
     lifecycle = relationship(
         "LaureateLifecycle", back_populates="laureate_award",
+        uselist=False, cascade="all, delete-orphan",
+    )
+    consent_file = relationship(
+        "LaureateConsentFile", back_populates="laureate_award",
         uselist=False, cascade="all, delete-orphan",
     )
 
@@ -124,6 +133,6 @@ class LaureateConsentFile(Base):
     filename = Column(String(500), nullable=False)
     content_type = Column(String(200))
     data = Column(LargeBinary, nullable=False)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    uploaded_at = Column(DateTime, default=_utcnow)
 
-    laureate_award = relationship("LaureateAward")
+    laureate_award = relationship("LaureateAward", back_populates="consent_file")

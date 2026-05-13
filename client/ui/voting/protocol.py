@@ -8,6 +8,7 @@ from PyQt5.QtGui import QFont, QColor
 
 from api_client import APIError
 from ui.print_helpers import print_table, pdf_table
+from ui.numeric_sort_item import NumericSortTableItem
 
 COLOR_SIGNED = QColor("#C8E6C9")
 COLOR_UNSIGNED = QColor("#FFF9C4")
@@ -80,6 +81,8 @@ class ProtocolPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
         bottom = QHBoxLayout()
@@ -109,6 +112,7 @@ class ProtocolPage(QWidget):
             self._protocols = []
 
         self.table.setRowCount(0)
+        self.table.setSortingEnabled(False)
         for i, p in enumerate(self._protocols):
             self.table.insertRow(i)
             is_signed = str(p.get("status", "")).lower() == "signed"
@@ -121,20 +125,31 @@ class ProtocolPage(QWidget):
                 "Подписан" if is_signed else "Не подписан",
                 "☑" if is_signed else "☐",
             ]
+            pid = int(p["id"])
             for col, text in enumerate(items_data):
-                item = QTableWidgetItem(text)
+                if col == 0:
+                    item = NumericSortTableItem(text, i + 1)
+                else:
+                    item = QTableWidgetItem(text)
                 item.setBackground(bg)
+                item.setData(Qt.UserRole, pid)
                 if col in (4,):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(i, col, item)
+        self.table.setSortingEnabled(True)
 
     # ── slots ────────────────────────────────────────────────────────────
 
     def _on_double_click(self, index):
         row = index.row()
-        if row < 0 or row >= len(self._protocols):
+        it = self.table.item(row, 0)
+        pid = it.data(Qt.UserRole) if it else None
+        if pid is None:
             return
-        protocol = dict(self._protocols[row])
+        protocol = next((p for p in self._protocols if p.get("id") == int(pid)), None)
+        if protocol is None:
+            return
+        protocol = dict(protocol)
         bid = protocol.get("bulletin_id")
         if bid is not None:
             try:
@@ -151,10 +166,14 @@ class ProtocolPage(QWidget):
             QMessageBox.information(self, "Информация", "Выберите протокол.")
             return
         row = rows[0].row()
-        if row < 0 or row >= len(self._protocols):
+        it = self.table.item(row, 0)
+        pid = it.data(Qt.UserRole) if it else None
+        if pid is None:
+            return
+        protocol = next((p for p in self._protocols if p.get("id") == int(pid)), None)
+        if protocol is None:
             return
 
-        protocol = self._protocols[row]
         currently = str(protocol.get("status", "")).lower() == "signed"
         try:
             self.api.update_protocol(

@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal, Qt, QDate
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 
 CATEGORIES = [
     ("", "Все"),
@@ -253,6 +254,8 @@ class LaureateCardsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.verticalHeader().setVisible(False)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.table)
 
         self.status_label = QLabel()
@@ -280,9 +283,12 @@ class LaureateCardsPage(QWidget):
                 or text in (l.get("organization") or "").lower()
             ]
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(filtered))
         for row, l in enumerate(filtered):
-            self.table.setItem(row, 0, self._make_item(str(l.get("id", ""))))
+            self.table.setItem(
+                row, 0, NumericSortTableItem(str(l.get("id", "")), l.get("id")),
+            )
             self.table.setItem(row, 1, self._make_item(l.get("full_name", "")))
             cat = l.get("category")
             self.table.setItem(row, 2, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
@@ -291,6 +297,7 @@ class LaureateCardsPage(QWidget):
             if created and "T" in str(created):
                 created = str(created).split("T")[0]
             self.table.setItem(row, 4, self._make_item(str(created or "")))
+        self.table.setSortingEnabled(True)
 
         self.status_label.setText(f"Всего: {len(filtered)} из {len(self._laureates)}")
 

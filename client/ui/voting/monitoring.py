@@ -35,6 +35,8 @@ class DetailedMonitoringDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.table, 1)
 
         btn_row = QHBoxLayout()
@@ -55,6 +57,7 @@ class DetailedMonitoringDialog(QDialog):
         self._populate()
 
     def _populate(self):
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for i, entry in enumerate(self._monitoring):
             self.table.insertRow(i)
@@ -80,6 +83,7 @@ class DetailedMonitoringDialog(QDialog):
                 color = COLOR_NOT_SENT
             for c in range(5):
                 self.table.item(i, c).setBackground(color)
+        self.table.setSortingEnabled(True)
 
     def _mark_selected(self, sent: bool = False, received: bool = False):
         rows = self.table.selectionModel().selectedRows()
@@ -152,6 +156,8 @@ class MonitoringPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
         bottom = QHBoxLayout()
@@ -205,6 +211,7 @@ class MonitoringPage(QWidget):
         n_members = len(self._members)
         n_bulletins = len(self._bulletins)
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(n_members)
         self.table.setColumnCount(n_bulletins + 1)
 
@@ -253,6 +260,7 @@ class MonitoringPage(QWidget):
             if total_sent > 0 and received_count < total_sent:
                 all_received_enough = False
 
+        self.table.setSortingEnabled(True)
         self._update_results_button(all_received_enough and n_bulletins > 0)
 
     def _update_results_button(self, enabled: bool):

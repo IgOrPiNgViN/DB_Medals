@@ -10,6 +10,7 @@ from PyQt5.QtGui import QFont
 import html as html_module
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html
 
 
@@ -135,6 +136,8 @@ class BulletinPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_bulletin_selected)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table)
 
         # ── section editing area (shown after selecting a bulletin) ──────
@@ -236,14 +239,18 @@ class BulletinPage(QWidget):
             self._bulletins = []
 
         self.table.setRowCount(0)
+        self.table.setSortingEnabled(False)
         for i, b in enumerate(self._bulletins):
             self.table.insertRow(i)
-            self.table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            no = NumericSortTableItem(str(i + 1), i + 1)
+            no.setData(Qt.UserRole, int(b["id"]))
+            self.table.setItem(i, 0, no)
             self.table.setItem(i, 1, QTableWidgetItem(b.get("number", "")))
             vs = b.get("voting_start") or b.get("start_date")
             ve = b.get("voting_end") or b.get("end_date")
             self.table.setItem(i, 2, QTableWidgetItem(str(vs or "")))
             self.table.setItem(i, 3, QTableWidgetItem(str(ve or "")))
+        self.table.setSortingEnabled(True)
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -269,8 +276,10 @@ class BulletinPage(QWidget):
             self._current_bulletin_id = None
             return
         row = rows[0].row()
-        if 0 <= row < len(self._bulletins):
-            self._current_bulletin_id = self._bulletins[row]["id"]
+        it = self.table.item(row, 0)
+        bid = it.data(Qt.UserRole) if it else None
+        if bid is not None:
+            self._current_bulletin_id = int(bid)
             self.section_group.setVisible(True)
             self._on_section_changed(self.section_combo.currentIndex())
 

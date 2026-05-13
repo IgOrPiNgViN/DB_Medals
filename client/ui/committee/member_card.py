@@ -8,6 +8,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 
 
 class AddAwardDialog(QDialog):
@@ -107,6 +108,8 @@ class MemberCardPage(QWidget):
         self.signing_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.signing_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.signing_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.signing_table.setSortingEnabled(True)
+        self.signing_table.horizontalHeader().setSortIndicatorShown(True)
         sg_layout.addWidget(self.signing_table)
 
         sg_btns = QHBoxLayout()
@@ -130,6 +133,8 @@ class MemberCardPage(QWidget):
         self.auth_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.auth_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.auth_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.auth_table.setSortingEnabled(True)
+        self.auth_table.horizontalHeader().setSortIndicatorShown(True)
         ag_layout.addWidget(self.auth_table)
 
         ag_btns = QHBoxLayout()
@@ -179,11 +184,20 @@ class MemberCardPage(QWidget):
 
     @staticmethod
     def _fill_rights_table(table: QTableWidget, items: list):
+        table.setSortingEnabled(False)
         table.setRowCount(0)
         for i, item in enumerate(items):
             table.insertRow(i)
-            table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            table.setItem(i, 1, QTableWidgetItem(item.get("award_name", f"Награда #{item.get('award_id', '?')}")))
+            no = NumericSortTableItem(str(i + 1), i + 1)
+            table.setItem(i, 0, no)
+            name = item.get("award_name", f"Награда #{item.get('award_id', '?')}")
+            name_it = QTableWidgetItem(name)
+            name_it.setFlags(name_it.flags() & ~Qt.ItemIsEditable)
+            rid = item.get("id")
+            if rid is not None:
+                name_it.setData(Qt.UserRole, int(rid))
+            table.setItem(i, 1, name_it)
+        table.setSortingEnabled(True)
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -261,11 +275,11 @@ class MemberCardPage(QWidget):
             QMessageBox.information(self, "Информация", "Выберите запись для удаления.")
             return
         row = rows[0].row()
-        if row < 0 or row >= len(data_list):
-            return
-        right_id = data_list[row].get("id")
+        it = table.item(row, 1)
+        right_id = it.data(Qt.UserRole) if it else None
         if right_id is None:
             return
+        right_id = int(right_id)
         try:
             self.api.remove_signing_right(right_id)
         except APIError as e:

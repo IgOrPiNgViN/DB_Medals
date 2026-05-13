@@ -8,6 +8,7 @@ from PyQt5.QtCore import pyqtSignal, Qt, QTimer
 from PyQt5.QtGui import QColor
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 
 CATEGORIES = [
     ("employee", "Сотрудники"),
@@ -127,6 +128,8 @@ class LaureateDetailPage(QWidget):
         self.awards_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.awards_table.verticalHeader().setVisible(False)
         self.awards_table.doubleClicked.connect(self._on_award_double_click)
+        self.awards_table.setSortingEnabled(True)
+        self.awards_table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.awards_table)
 
     def load_laureate(self, laureate_id: int):
@@ -164,11 +167,14 @@ class LaureateDetailPage(QWidget):
         except APIError:
             awards = []
 
+        self.awards_table.setSortingEnabled(False)
         self.awards_table.setRowCount(len(awards))
         for row, la in enumerate(awards):
             la_id = la.get("id", "")
-            self.awards_table.setItem(row, 0, self._make_item(str(la_id)))
-            self.awards_table.setItem(row, 1, self._make_item(str(la.get("award_id", ""))))
+            self.awards_table.setItem(row, 0, NumericSortTableItem(str(la_id), la_id))
+            self.awards_table.setItem(
+                row, 1, NumericSortTableItem(str(la.get("award_id", "")), la.get("award_id")),
+            )
             self.awards_table.setItem(row, 2, self._make_item(str(la.get("assigned_date", "") or "")))
             self.awards_table.setItem(row, 3, self._make_item(la.get("status", "")))
 
@@ -185,6 +191,7 @@ class LaureateDetailPage(QWidget):
             else:
                 pbar.setStyleSheet("QProgressBar::chunk { background: #E0E0E0; }")
             self.awards_table.setCellWidget(row, 4, pbar)
+        self.awards_table.setSortingEnabled(True)
 
     def _get_lifecycle_progress(self, laureate_award_id: int) -> int:
         try:

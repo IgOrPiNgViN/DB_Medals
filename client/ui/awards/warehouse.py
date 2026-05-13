@@ -10,6 +10,7 @@ from PyQt5.QtGui import QColor, QBrush
 from api_client import APIClient, APIError
 from ui.tab_helpers import configure_tab_bar_no_clip
 from ui.print_helpers import print_table, pdf_table
+from ui.numeric_sort_item import NumericSortTableItem
 
 AWARD_TABS = [
     ("Медали", "Медали"),
@@ -168,6 +169,8 @@ class WarehousePage(QWidget):
         table.horizontalHeader().setStretchLastSection(True)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.doubleClicked.connect(self._on_double_click)
+        table.setSortingEnabled(True)
+        table.horizontalHeader().setSortIndicatorShown(True)
         return table
 
     def _build_decorations_tab(self) -> QWidget:
@@ -217,11 +220,17 @@ class WarehousePage(QWidget):
 
         for type_key, table in self.tables.items():
             items = grouped.get(type_key, [])
+            table.setSortingEnabled(False)
             table.setRowCount(0)
             table.setRowCount(len(items))
             for row, item in enumerate(items):
                 id_val = str(item.get("id", ""))
-                table.setItem(row, 0, QTableWidgetItem(id_val))
+                id_cell = NumericSortTableItem(id_val, item.get("id"))
+                try:
+                    id_cell.setData(Qt.UserRole, int(item.get("id")))
+                except (TypeError, ValueError):
+                    pass
+                table.setItem(row, 0, id_cell)
                 table.setItem(row, 1, QTableWidgetItem(item.get("award_name", "")))
                 table.setItem(row, 2, QTableWidgetItem(item.get("component_type", "")))
 
@@ -231,13 +240,14 @@ class WarehousePage(QWidget):
                 available = item.get("available", 0)
 
                 for col, val in [(3, total), (4, reserve), (5, issued), (6, available)]:
-                    cell = QTableWidgetItem(str(val))
+                    cell = NumericSortTableItem(str(val), val)
                     cell.setTextAlignment(Qt.AlignCenter)
                     if col == 6 and isinstance(available, (int, float)) and available < LOW_STOCK_THRESHOLD:
                         cell.setBackground(QBrush(LOW_STOCK_BG))
                     table.setItem(row, col, cell)
 
             table.setProperty("_items", items)
+            table.setSortingEnabled(True)
 
         deco_items = grouped.get("Украшения", [])
         total_sum = sum(it.get("total", 0) for it in deco_items if isinstance(it.get("total"), (int, float)))
@@ -256,10 +266,25 @@ class WarehousePage(QWidget):
 
         row = index.row()
         items = table.property("_items")
-        if not items or row >= len(items):
+        if not items:
             return
 
-        item_data = items[row]
+        id_item = table.item(row, 0)
+        if not id_item:
+            return
+        inv_id = id_item.data(Qt.UserRole)
+        if inv_id is None:
+            try:
+                inv_id = int(id_item.text())
+            except ValueError:
+                return
+
+        item_data = next(
+            (it for it in items if it.get("id") == inv_id or str(it.get("id")) == str(inv_id)),
+            None,
+        )
+        if item_data is None:
+            return
         item_id = item_data.get("id")
         if item_id is None:
             return

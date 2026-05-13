@@ -5,7 +5,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class BulletinType(str, enum.Enum):
@@ -29,7 +33,7 @@ class Bulletin(Base):
     voting_end = Column(Date)
     postal_address = Column(Text)
     status = Column(SAEnum(BulletinStatus), default=BulletinStatus.DRAFT)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     sections = relationship(
         "BulletinSection", back_populates="bulletin", cascade="all, delete-orphan",
@@ -99,7 +103,7 @@ class Vote(Base):
     question_id = Column(Integer, ForeignKey("bulletin_questions.id"), nullable=False)
     member_id = Column(Integer, ForeignKey("committee_members.id"), nullable=False)
     value = Column(SAEnum(VoteValue), default=VoteValue.FOR)
-    voted_at = Column(DateTime, default=datetime.utcnow)
+    voted_at = Column(DateTime, default=_utcnow)
 
     question = relationship("BulletinQuestion", back_populates="votes")
     member = relationship("CommitteeMember")
@@ -119,7 +123,7 @@ class Protocol(Base):
     date = Column(Date)
     status = Column(SAEnum(ProtocolStatus), default=ProtocolStatus.DRAFT)
     details = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     bulletin = relationship("Bulletin", back_populates="protocol")
     extracts = relationship(

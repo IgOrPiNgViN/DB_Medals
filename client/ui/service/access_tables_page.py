@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from api_client import APIClient, APIError
+from ui.numeric_sort_item import NumericSortTableItem
 
 
 class AccessTablesPage(QWidget):
@@ -66,6 +67,8 @@ class AccessTablesPage(QWidget):
         self.table.verticalHeader().setVisible(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
         self._load_table_list()
@@ -102,6 +105,7 @@ class AccessTablesPage(QWidget):
             return
         cols = payload.get("columns") or []
         rows = payload.get("rows") or []
+        self.table.setSortingEnabled(False)
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -110,10 +114,14 @@ class AccessTablesPage(QWidget):
             for ci, c in enumerate(cols):
                 val = row.get(c)
                 text = "" if val is None else str(val)
-                item = QTableWidgetItem(text)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    item = NumericSortTableItem(text, val)
+                else:
+                    item = NumericSortTableItem(text)
                 item.setToolTip(text[:2000] if len(text) > 200 else text)
                 self.table.setItem(ri, ci, item)
         self.table.resizeColumnsToContents()
+        self.table.setSortingEnabled(True)
 
     def showEvent(self, event):
         super().showEvent(event)

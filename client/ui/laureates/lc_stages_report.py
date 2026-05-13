@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 
 STAGE_LABELS = {
@@ -99,6 +100,8 @@ class LifecycleStagesReportPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.table, 1)
 
     def refresh_data(self):
@@ -140,13 +143,16 @@ class LifecycleStagesReportPage(QWidget):
                 f"На этапе «{STAGE_LABELS.get(key, key)}»: {len(rows)}",
             )
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             st = r.get("_stage", "")
-            self.table.setItem(i, 0, self._item(str(r.get("laureate_award_id", ""))))
+            la_id = r.get("laureate_award_id", "")
+            self.table.setItem(i, 0, NumericSortTableItem(str(la_id), la_id))
             self.table.setItem(i, 1, self._item(r.get("laureate_name", "")))
             self.table.setItem(i, 2, self._item(r.get("award_name", "")))
             self.table.setItem(i, 3, self._item(STAGE_LABELS.get(st, st)))
+        self.table.setSortingEnabled(True)
 
     @staticmethod
     def _item(text: str) -> QTableWidgetItem:
