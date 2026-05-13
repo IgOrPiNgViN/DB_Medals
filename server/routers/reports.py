@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import Optional
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 
 from database import get_db
 from models.award import Award, AwardEstablishment, AwardDevelopment, InventoryItem
@@ -94,6 +94,8 @@ def awards_laureates(db: Session = Depends(get_db)):
     for a in awards:
         laureates = []
         for la in a.laureate_awards:
+            if la.laureate is None:
+                continue
             laureates.append({
                 "laureate_award_id": la.id,
                 "laureate_id": la.laureate.id,
@@ -126,6 +128,8 @@ def incomplete_lifecycle(db: Session = Depends(get_db)):
     )
     result = []
     for la in la_list:
+        if la.laureate is None or la.award is None:
+            continue
         lc = la.lifecycle
         if lc is None:
             result.append({
@@ -267,9 +271,9 @@ def statistics(
         func.count(Laureate.id).label("count"),
     )
     if from_date:
-        q = q.filter(Laureate.created_at >= from_date)
+        q = q.filter(func.date(Laureate.created_at) >= from_date)
     if to_date:
-        q = q.filter(Laureate.created_at <= to_date)
+        q = q.filter(func.date(Laureate.created_at) <= to_date)
     rows = q.group_by(Laureate.category).all()
 
     total = sum(r.count for r in rows)

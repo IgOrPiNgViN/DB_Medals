@@ -1,8 +1,8 @@
 @startuml ER_awards_db
 
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 80
+skinparam nodesep 70
+skinparam ranksep 90
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 
@@ -15,22 +15,28 @@ skinparam entity {
   HeaderFontStyle bold
 }
 
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #F9A825
+}
+
 ' ─────────────────────────────────────────
 ' ENUMS (справочники)
 ' ─────────────────────────────────────────
 
 entity "<<enum>>\nawardtype" as awardtype {
-  MEDAL
-  PPZ
-  DISTINCTION
-  DECORATION
+  MEDAL | PPZ
+  DISTINCTION | DECORATION
 }
 
 entity "<<enum>>\napprovaltype" as approvaltype {
-  NK
-  HERALDISTS
-  RELATIVES
-  SPONSORS
+  NK | HERALDISTS
+  RELATIVES | SPONSORS
+}
+
+entity "<<enum>>\napprovalstatus" as approvalstatus #LightYellow {
+  pending | approved
+  rejected | revision
 }
 
 entity "<<enum>>\ncomponenttype" as componenttype {
@@ -39,36 +45,45 @@ entity "<<enum>>\ncomponenttype" as componenttype {
   CERTIFICATE | CASE
 }
 
+entity "<<enum>>\nproductionstatus" as productionstatus #LightYellow {
+  planned | ordered
+  in_production | delivered | cancelled
+}
+
+entity "<<enum>>\ndevelopmentstatus" as developmentstatus #LightYellow {
+  planned | in_progress
+  review | completed | cancelled
+}
+
 entity "<<enum>>\nlaureatecategory" as laureatecategory {
   EMPLOYEE | VETERAN
   UNIVERSITY | NII
   NONPROFIT | COMMERCIAL
 }
 
+entity "<<enum>>\nlaureateawardstatus" as laureateawardstatus #LightYellow {
+  nominated | approved
+  rejected | awarded | cancelled
+}
+
 entity "<<enum>>\nbulletintype" as bulletintype {
-  MEDAL
-  PPZ
+  MEDAL | PPZ
 }
 
 entity "<<enum>>\nbulletinstatus" as bulletinstatus {
-  DRAFT
-  ACTIVE
-  CLOSED
+  DRAFT | ACTIVE | CLOSED
 }
 
 entity "<<enum>>\nprotocolstatus" as protocolstatus {
-  DRAFT
-  SIGNED
+  DRAFT | SIGNED
 }
 
 entity "<<enum>>\nsigningrole" as signingrole {
-  SIGNER
-  AUTHORIZED
+  SIGNER | AUTHORIZED
 }
 
 entity "<<enum>>\nvotevalue" as votevalue {
-  FOR
-  AGAINST
+  FOR | AGAINST
 }
 
 ' ─────────────────────────────────────────
@@ -83,16 +98,31 @@ entity "awards" {
   description : text
   image_front : bytea
   image_back : bytea
-  created_at : timestamp
+  created_at : timestamptz
 }
+
+note right of awards
+  image_front / image_back —
+  бинарные данные, MIME
+  определяется по сигнатуре.
+  Для больших БД рассмотреть
+  вынос в файловое хранилище.
+end note
 
 entity "award_characteristics" {
   * id : integer <<PK>>
   --
   * award_id : integer <<FK>>
-  * field_name : varchar(255)
+  * field_name : text
   field_value : text
 }
+
+note right of award_characteristics
+  EAV-паттерн: поля из Access
+  (НаградыМега). Оправдан
+  для зеркала произвольных
+  атрибутов импорта.
+end note
 
 entity "award_establishments" {
   * id : integer <<PK>>
@@ -113,6 +143,7 @@ entity "award_developments" {
   start_date : date
   end_date : date
   status : varchar(100)
+  status_enum : developmentstatus
   details : text
 }
 
@@ -123,6 +154,7 @@ entity "award_approvals" {
   * approval_type : approvaltype
   approver_name : varchar(500)
   status : varchar(100)
+  status_enum : approvalstatus
   date : date
   details : text
 }
@@ -138,6 +170,7 @@ entity "award_productions" {
   order_date : date
   delivery_date : date
   status : varchar(100)
+  status_enum : productionstatus
   details : text
 }
 
@@ -149,10 +182,17 @@ entity "inventory_items" {
   total_count : integer
   reserve_count : integer
   issued_count : integer
-  available_count : integer
+  available_count : integer <<computed>>
   details : text
-  updated_at : timestamp
+  updated_at : timestamptz
 }
+
+note right of inventory_items
+  **available_count вычислимо:**
+  = total − reserve − issued
+  Контролируется CHECK-constraint.
+  Кандидат на GENERATED COLUMN.
+end note
 
 ' ─────────────────────────────────────────
 ' ЛАУРЕАТЫ
@@ -169,7 +209,7 @@ entity "laureates" {
   email : varchar(255)
   address : text
   notes : text
-  created_at : timestamp
+  created_at : timestamptz
 }
 
 entity "laureate_awards" {
@@ -178,40 +218,65 @@ entity "laureate_awards" {
   * laureate_id : integer <<FK>>
   * award_id : integer <<FK>>
   assigned_date : date
-  bulletin_number : varchar(50)
   initiator : varchar(500)
   status : varchar(100)
+  status_enum : laureateawardstatus
 }
+
+note right of laureate_awards
+  bulletin_number удалён —
+  дублировал voting_bulletin_number
+  в laureate_lifecycles.
+  Единственный источник правды
+  → lifecycle.
+end note
 
 entity "laureate_lifecycles" {
   * id : integer <<PK>>
   --
   * laureate_award_id : integer <<FK, UQ>>
+  ..Этап 1 — Номинирование..
   nomination_date : date
   nomination_initiator : varchar(500)
   nomination_done : boolean
+  ..Этап 2 — Голосование..
   voting_date : date
   voting_bulletin_number : varchar(50)
   voting_done : boolean
+  ..Этап 3 — Решение..
   decision_date : date
   decision_protocol_number : varchar(50)
   decision_done : boolean
+  ..Этап 4 — Регистрация..
   registration_date : date
   registration_signer_id : integer <<FK>>
   registration_certificate_number : varchar(100)
   registration_done : boolean
+  ..Этап 5 — Вручение..
   ceremony_date : date
   ceremony_place : varchar(500)
   ceremony_done : boolean
+  ..Этап 6 — Публикация..
   publication_date : date
   publication_source : varchar(500)
   publication_done : boolean
+  ..Склад..
   inventory_reserved : boolean
   inventory_issued : boolean
+  ..Согласие ПД..
   consent_sent_date : date
   consent_received_date : date
   consent_received : boolean
 }
+
+note right of laureate_lifecycles
+  Плоская структура (20+ колонок).
+  Потенциал нормализации:
+  таблица lifecycle_stage_entries
+  (laureate_award_id, stage, done, date).
+  Текущая структура оправдана
+  простотой запросов и отчётов ТЗ.
+end note
 
 entity "laureate_consent_files" {
   * id : integer <<PK>>
@@ -220,7 +285,7 @@ entity "laureate_consent_files" {
   * filename : varchar(500)
   content_type : varchar(200)
   * data : bytea
-  uploaded_at : timestamp
+  uploaded_at : timestamptz
 }
 
 ' ─────────────────────────────────────────
@@ -237,7 +302,7 @@ entity "committee_members" {
   email : varchar(255)
   is_active : boolean
   notes : text
-  created_at : timestamp
+  created_at : timestamptz
 }
 
 entity "member_signing_rights" {
@@ -247,6 +312,7 @@ entity "member_signing_rights" {
   * award_id : integer <<FK>>
   * role : signingrole
   assigned_date : date
+  <<UNIQUE (member_id, award_id)>>
 }
 
 ' ─────────────────────────────────────────
@@ -262,7 +328,7 @@ entity "bulletins" {
   voting_end : date
   postal_address : text
   status : bulletinstatus
-  created_at : timestamp
+  created_at : timestamptz
 }
 
 entity "bulletin_sections" {
@@ -292,6 +358,7 @@ entity "bulletin_distributions" {
   sent_date : date
   received : boolean
   received_date : date
+  <<UNIQUE (bulletin_id, member_id)>>
 }
 
 entity "votes" {
@@ -300,7 +367,8 @@ entity "votes" {
   * question_id : integer <<FK>>
   * member_id : integer <<FK>>
   value : votevalue
-  voted_at : timestamp
+  voted_at : timestamptz
+  <<UNIQUE (question_id, member_id)>>
 }
 
 entity "protocols" {
@@ -311,7 +379,7 @@ entity "protocols" {
   date : date
   status : protocolstatus
   details : text
-  created_at : timestamp
+  created_at : timestamptz
 }
 
 entity "protocol_extracts" {
@@ -343,33 +411,40 @@ entity "access_mirror_rows" {
   * table_name : varchar(512)
   * row_index : integer
   * data : jsonb
+  <<UNIQUE (table_name, row_index)>>
 }
+
+note right of access_mirror_rows
+  Сырое зеркало CSV-выгрузки
+  из Access. Служебная таблица,
+  не связана с основной схемой.
+end note
 
 ' ─────────────────────────────────────────
 ' СВЯЗИ — НАГРАДЫ
 ' ─────────────────────────────────────────
 
-awards ||--o{ award_characteristics      : "award_id"
-awards ||--o| award_establishments       : "award_id"
-awards ||--o| award_developments         : "award_id"
-awards ||--o{ award_approvals            : "award_id"
-awards ||--o{ award_productions          : "award_id"
-awards ||--o{ inventory_items            : "award_id"
-awards ||--o{ member_signing_rights      : "award_id"
+awards ||--o{ award_characteristics   : "award_id"
+awards ||--o| award_establishments    : "award_id"
+awards ||--o| award_developments      : "award_id"
+awards ||--o{ award_approvals         : "award_id"
+awards ||--o{ award_productions       : "award_id"
+awards ||--o{ inventory_items         : "award_id"
+awards ||--o{ member_signing_rights   : "award_id"
 
 ' ─────────────────────────────────────────
 ' СВЯЗИ — ЛАУРЕАТЫ
 ' ─────────────────────────────────────────
 
-laureates       ||--o{ laureate_awards          : "laureate_id"
-awards          ||--o{ laureate_awards          : "award_id"
-laureate_awards ||--o| laureate_lifecycles      : "laureate_award_id"
-laureate_awards ||--o| laureate_consent_files   : "laureate_award_id"
-laureate_awards ||--o{ protocol_extracts        : "laureate_award_id"
-laureate_awards ||--o{ ppz_submissions          : "laureate_award_id"
-laureate_awards ||--o{ bulletin_questions       : "laureate_award_id"
+laureates       ||--o{ laureate_awards        : "laureate_id"
+awards          ||--o{ laureate_awards        : "award_id"
+laureate_awards ||--o| laureate_lifecycles    : "laureate_award_id"
+laureate_awards ||--o| laureate_consent_files : "laureate_award_id"
+laureate_awards ||--o{ protocol_extracts      : "laureate_award_id"
+laureate_awards ||--o{ ppz_submissions        : "laureate_award_id"
+laureate_awards ||--o{ bulletin_questions     : "laureate_award_id"
 
-committee_members ||--o{ laureate_lifecycles    : "registration_signer_id"
+committee_members ||--o{ laureate_lifecycles  : "registration_signer_id"
 
 ' ─────────────────────────────────────────
 ' СВЯЗИ — НК
@@ -384,26 +459,30 @@ committee_members ||--o{ ppz_submissions        : "authorized_member_id"
 ' СВЯЗИ — ГОЛОСОВАНИЕ
 ' ─────────────────────────────────────────
 
-bulletins         ||--o{ bulletin_sections      : "bulletin_id"
-bulletins         ||--o{ bulletin_distributions : "bulletin_id"
-bulletins         ||--o| protocols              : "bulletin_id"
-bulletin_sections ||--o{ bulletin_questions     : "section_id"
-bulletin_questions ||--o{ votes                 : "question_id"
-protocols         ||--o{ protocol_extracts      : "protocol_id"
+bulletins          ||--o{ bulletin_sections      : "bulletin_id"
+bulletins          ||--o{ bulletin_distributions : "bulletin_id"
+bulletins          ||--o| protocols              : "bulletin_id"
+bulletin_sections  ||--o{ bulletin_questions     : "section_id"
+bulletin_questions ||--o{ votes                  : "question_id"
+protocols          ||--o{ protocol_extracts      : "protocol_id"
 
 ' ─────────────────────────────────────────
-' СВЯЗИ ENUM
+' СВЯЗИ ENUM → СУЩНОСТИ
 ' ─────────────────────────────────────────
 
-awards             }o--|| awardtype
-award_approvals    }o--|| approvaltype
-award_productions  }o--|| componenttype
-inventory_items    }o--|| componenttype
-laureates          }o--|| laureatecategory
-bulletins          }o--|| bulletintype
-bulletins          }o--|| bulletinstatus
-protocols          }o--|| protocolstatus
+awards              }o--|| awardtype
+award_approvals     }o--|| approvaltype
+award_approvals     }o--|| approvalstatus
+award_productions   }o--|| componenttype
+award_productions   }o--|| productionstatus
+award_developments  }o--|| developmentstatus
+inventory_items     }o--|| componenttype
+laureates           }o--|| laureatecategory
+laureate_awards     }o--|| laureateawardstatus
+bulletins           }o--|| bulletintype
+bulletins           }o--|| bulletinstatus
+protocols           }o--|| protocolstatus
 member_signing_rights }o--|| signingrole
-votes              }o--|| votevalue
+votes               }o--|| votevalue
 
 @enduml

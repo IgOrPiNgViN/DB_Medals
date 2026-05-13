@@ -9,6 +9,7 @@ from PyQt5.QtGui import QFont, QColor
 
 from api_client import APIError
 from ui.voting.protocol import ProtocolDetailDialog
+from ui.numeric_sort_item import NumericSortTableItem
 
 THRESHOLD = 0.65
 COLOR_PASS = QColor("#C8E6C9")
@@ -96,6 +97,8 @@ class VoteCountingPage(QWidget):
         self.members_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.members_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.members_table.doubleClicked.connect(self._on_member_double_click)
+        self.members_table.setSortingEnabled(True)
+        self.members_table.horizontalHeader().setSortIndicatorShown(True)
         mg_layout.addWidget(self.members_table)
 
         btn_save = QPushButton("Сохранить результаты")
@@ -112,6 +115,8 @@ class VoteCountingPage(QWidget):
         self.results_table.setHorizontalHeaderLabels(["Вопрос", "% За", "Решение"])
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.results_table.setSortingEnabled(True)
+        self.results_table.horizontalHeader().setSortIndicatorShown(True)
         rg_layout.addWidget(self.results_table)
 
         self.lbl_decision = QLabel("")
@@ -157,6 +162,7 @@ class VoteCountingPage(QWidget):
         self._load_results()
 
     def _load_eligible_members(self):
+        self.members_table.setSortingEnabled(False)
         self.members_table.setRowCount(0)
         self._eligible_members = []
         if self._current_bulletin_id is None:
@@ -171,16 +177,26 @@ class VoteCountingPage(QWidget):
 
         for i, entry in enumerate(self._eligible_members):
             self.members_table.insertRow(i)
-            self.members_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            no = NumericSortTableItem(str(i + 1), i + 1)
+            mid = entry.get("member_id")
+            if mid is not None:
+                no.setData(Qt.UserRole, int(mid))
+            self.members_table.setItem(i, 0, no)
             name = entry.get("member_name", f"ID {entry.get('member_id', '?')}")
-            self.members_table.setItem(i, 1, QTableWidgetItem(name))
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            if mid is not None:
+                name_item.setData(Qt.UserRole, int(mid))
+            self.members_table.setItem(i, 1, name_item)
             voted = entry.get("has_voted", False)
             status_item = QTableWidgetItem("Проголосовал" if voted else "Ожидание")
             if voted:
                 status_item.setBackground(QColor("#C8E6C9"))
             self.members_table.setItem(i, 2, status_item)
+        self.members_table.setSortingEnabled(True)
 
     def _load_results(self):
+        self.results_table.setSortingEnabled(False)
         self.results_table.setRowCount(0)
         self.lbl_decision.setText("")
         if self._current_bulletin_id is None:
@@ -196,10 +212,12 @@ class VoteCountingPage(QWidget):
             self.results_table.insertRow(i)
 
             question_text = r.get("question_text", f"Вопрос #{r.get('question_id', '?')}")
-            self.results_table.setItem(i, 0, QTableWidgetItem(question_text))
+            self.results_table.setItem(
+                i, 0, NumericSortTableItem(question_text, r.get("question_id")),
+            )
 
             pct = r.get("percent_for", 0.0)
-            pct_item = QTableWidgetItem(f"{pct:.1f}%")
+            pct_item = NumericSortTableItem(f"{pct:.1f}%", pct)
             pct_item.setTextAlignment(Qt.AlignCenter)
 
             passed = pct >= THRESHOLD * 100
@@ -216,6 +234,7 @@ class VoteCountingPage(QWidget):
             dec_item.setBackground(color)
             dec_item.setTextAlignment(Qt.AlignCenter)
             self.results_table.setItem(i, 2, dec_item)
+        self.results_table.setSortingEnabled(True)
 
         if results and all_pass:
             self.lbl_decision.setText("✓ Решение принято (≥65% по всем вопросам)")
@@ -228,9 +247,19 @@ class VoteCountingPage(QWidget):
 
     def _on_member_double_click(self, index):
         row = index.row()
-        if row < 0 or row >= len(self._eligible_members):
+        it = self.members_table.item(row, 0)
+        mid = it.data(Qt.UserRole) if it else None
+        if mid is None:
+            it = self.members_table.item(row, 1)
+            mid = it.data(Qt.UserRole) if it else None
+        if mid is None:
             return
-        entry = self._eligible_members[row]
+        entry = next(
+            (e for e in self._eligible_members if e.get("member_id") == int(mid)),
+            None,
+        )
+        if entry is None:
+            return
         member_name = entry.get("member_name", "")
 
         if self._current_bulletin_id is None:

@@ -5,7 +5,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class AwardType(str, enum.Enum):
@@ -24,7 +28,7 @@ class Award(Base):
     description = Column(Text)
     image_front = Column(LargeBinary)
     image_back = Column(LargeBinary)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     characteristics = relationship(
         "AwardCharacteristic", back_populates="award", cascade="all, delete-orphan",
@@ -43,7 +47,9 @@ class Award(Base):
     productions = relationship(
         "AwardProduction", back_populates="award", cascade="all, delete-orphan",
     )
-    laureate_awards = relationship("LaureateAward", back_populates="award")
+    laureate_awards = relationship(
+        "LaureateAward", back_populates="award", cascade="all, delete",
+    )
     inventory_items = relationship(
         "InventoryItem", back_populates="award", cascade="all, delete-orphan",
     )
@@ -154,6 +160,6 @@ class InventoryItem(Base):
     issued_count = Column(Integer, default=0)
     available_count = Column(Integer, default=0)
     details = Column(Text)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=datetime.utcnow)
 
     award = relationship("Award", back_populates="inventory_items")

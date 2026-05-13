@@ -7,6 +7,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 
 CATEGORY_DISPLAY = {
@@ -80,6 +81,8 @@ class AwardsLaureatesPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.table)
 
         self.status_label = QLabel()
@@ -127,15 +130,17 @@ class AwardsLaureatesPage(QWidget):
                     "assigned_date": lau.get("assigned_date", ""),
                 })
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            self.table.setItem(i, 0, self._make_item(str(r["la_id"])))
+            self.table.setItem(i, 0, NumericSortTableItem(str(r["la_id"]), r["la_id"]))
             self.table.setItem(i, 1, self._make_item(r["award_name"]))
             self.table.setItem(i, 2, self._make_item(r["award_type"]))
             self.table.setItem(i, 3, self._make_item(r["full_name"]))
             cat = r["category"]
             self.table.setItem(i, 4, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
             self.table.setItem(i, 5, self._make_item(str(r["assigned_date"] or "")))
+        self.table.setSortingEnabled(True)
 
         self.status_label.setText(f"Строк: {len(rows)}")
 

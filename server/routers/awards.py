@@ -49,7 +49,64 @@ def _guess_image_mime(data: bytes) -> str:
         return "image/gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
+    if len(data) >= 4 and data[:4] in (b"\x49\x49\x2a\x00", b"\x4d\x4d\x00\x2a"):
+        return "image/tiff"
+    if data[:2] == b"BM":
+        return "image/bmp"
     return "application/octet-stream"
+
+
+def _image_magic_at(data: bytes, pos: int = 0) -> bool:
+    """По смещению pos — начинается ли известный растровый формат."""
+    if pos < 0 or pos >= len(data):
+        return False
+    s = data[pos:]
+    if len(s) < 4:
+        return False
+    if s[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if len(s) >= 3 and s[:3] == b"\xff\xd8\xff":
+        return True
+    if len(s) >= 6 and s[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if len(s) >= 12 and s[:4] == b"RIFF" and s[8:12] == b"WEBP":
+        return True
+    if len(s) >= 4 and s[:4] in (b"\x49\x49\x2a\x00", b"\x4d\x4d\x00\x2a"):
+        return True
+    if s[:2] == b"BM":
+        return True
+    return False
+
+
+def _normalize_award_image_bytes(raw: bytes | bytearray | memoryview | None) -> bytes | None:
+    """
+    Достаёт «сырые» пиксели из поля БД.
+
+    Access часто хранит OLE-обёртку вокруг JPEG/PNG — Qt не открывает такой blob
+    напрямую. Ищем сигнатуру изображения в первых 64 KiB и отрезаем префикс.
+    """
+    if raw is None:
+        return None
+    b = bytes(raw)
+    if len(b) < 4:
+        return None
+    if _image_magic_at(b, 0):
+        return b
+    limit = min(len(b), 65536)
+    for i in range(1, limit - 4):
+        if _image_magic_at(b, i):
+            return b[i:]
+    # Не нашли сигнатуру — отдаём как есть (редкие форматы / уже сырые данные)
+    return b
+
+
+def _award_side_has_image(blob: bytes | bytearray | memoryview | None) -> bool:
+    if blob is None or len(blob) == 0:
+        return False
+    nb = _normalize_award_image_bytes(blob)
+    if not nb:
+        return False
+    return _image_magic_at(nb, 0)
 
 
 def _get_award_or_404(db: Session, award_id: int) -> Award:
@@ -82,8 +139,8 @@ def list_awards(award_type: Optional[str] = None, db: Session = Depends(get_db))
                 award_type=a.award_type,
                 description=a.description,
                 created_at=a.created_at,
-                has_image=bool(a.image_front and len(a.image_front) > 0),
-                has_image_back=bool(a.image_back and len(a.image_back) > 0),
+                has_image=_award_side_has_image(a.image_front),
+                has_image_back=_award_side_has_image(a.image_back),
             )
         )
     return out
@@ -247,8 +304,8 @@ async def upload_award_images(
     db.refresh(award)
     return {
         "status": "ok",
-        "has_front": bool(award.image_front and len(award.image_front) > 0),
-        "has_back": bool(award.image_back and len(award.image_back) > 0),
+        "has_front": _award_side_has_image(award.image_front),
+        "has_back": _award_side_has_image(award.image_back),
     }
 
 
@@ -275,10 +332,13 @@ def get_award_image(
     if side not in ("front", "back"):
         raise HTTPException(status_code=400, detail="side must be front or back")
     award = _get_award_or_404(db, award_id)
-    data = award.image_front if side == "front" else award.image_back
-    if not data:
+    raw = award.image_front if side == "front" else award.image_back
+    if not raw:
         raise HTTPException(status_code=404, detail="Изображение не загружено")
-    return Response(content=bytes(data), media_type=_guess_image_mime(bytes(data)))
+    payload = _normalize_award_image_bytes(raw)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Изображение не загружено")
+    return Response(content=payload, media_type=_guess_image_mime(payload))
 
 
 @router.get("/{award_id}", response_model=AwardRead)

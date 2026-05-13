@@ -6,22 +6,11 @@ from PyQt5.QtWidgets import (
     QFormLayout, QLineEdit, QAbstractItemView, QScrollArea, QFrame,
     QGridLayout, QStackedWidget, QSizePolicy, QFileDialog,
 )
-from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer
+from PyQt5.QtGui import QFont, QImage, QPixmap
 
 from api_client import APIClient, APIError
-
-
-class _NumericSortItem(QTableWidgetItem):
-    """Сортировка по числу (колонка «№»), а не по строке «10» < «2»."""
-
-    def __lt__(self, other: QTableWidgetItem) -> bool:
-        if other is None:
-            return False
-        try:
-            return int(self.text()) < int(other.text())
-        except ValueError:
-            return self.text() < other.text()
+from ui.numeric_sort_item import NumericSortTableItem
 
 AWARD_TYPE_FILTER = [
     ("Все", None),
@@ -149,10 +138,20 @@ class _AwardCatalogCard(QFrame):
 
     clicked_id = pyqtSignal(int)
 
-    def __init__(self, award_id: int, name: str, api: APIClient, parent=None):
+    def __init__(
+        self,
+        award_id: int,
+        name: str,
+        api: APIClient,
+        has_image: bool = False,
+        has_image_back: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self._award_id = award_id
         self._api = api
+        self._has_image = has_image
+        self._has_image_back = has_image_back
         self.setObjectName("AwardCatalogCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
@@ -189,22 +188,40 @@ class _AwardCatalogCard(QFrame):
         title.setStyleSheet("color: #1a2332;")
         lay.addWidget(title)
 
-        self._load_thumb()
+        # Загружаем эскиз асинхронно — карточка сразу отображается,
+        # изображение подгружается после первой отрисовки UI.
+        QTimer.singleShot(0, self._load_thumb)
 
     def _load_thumb(self) -> None:
         pm = QPixmap(160, 160)
         pm.fill(Qt.transparent)
-        data = self._api.get_award_image_bytes(self._award_id, "front")
-        if not data:
-            data = self._api.get_award_image_bytes(self._award_id, "back")
-        if data:
-            p = QPixmap()
-            if p.loadFromData(data):
-                pm = p.scaled(
-                    160, 160,
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
+        if not self._has_image and not self._has_image_back:
+            self._img.setPixmap(pm)
+            return
+        try:
+            data = None
+            if self._has_image:
+                data = self._api.get_award_image_bytes(self._award_id, "front")
+            if not data and self._has_image_back:
+                data = self._api.get_award_image_bytes(self._award_id, "back")
+            if data:
+                p = QPixmap()
+                if p.loadFromData(data):
+                    pm = p.scaled(
+                        160, 160,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                else:
+                    img = QImage.fromData(data)
+                    if not img.isNull():
+                        pm = QPixmap.fromImage(img).scaled(
+                            160, 160,
+                            Qt.KeepAspectRatio,
+                            Qt.SmoothTransformation,
+                        )
+        except Exception:
+            pass  # сетевая ошибка — показываем пустой placeholder
         self._img.setPixmap(pm)
 
     def mouseReleaseEvent(self, event):
@@ -226,6 +243,7 @@ class AwardsCardsPage(QWidget):
         self.api = api_client
         self._catalog_inner: QWidget | None = None
         self._catalog_grid: QGridLayout | None = None
+        self._catalog_scroll: QScrollArea | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -246,13 +264,11 @@ class AwardsCardsPage(QWidget):
         self.filter_combo.setMinimumWidth(180)
         for label, _ in AWARD_TYPE_FILTER:
             self.filter_combo.addItem(label)
-        self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.filter_combo)
 
         self.view_combo = QComboBox()
         self.view_combo.addItem("Каталог (как в Access)", "catalog")
         self.view_combo.addItem("Таблица", "table")
-        self.view_combo.currentIndexChanged.connect(self._on_view_changed)
         toolbar.addWidget(self.view_combo)
 
         toolbar.addStretch()
@@ -273,11 +289,14 @@ class AwardsCardsPage(QWidget):
         self.stack.setStyleSheet("QStackedWidget { background: #e4eaf2; border-radius: 8px; }")
 
         catalog_scroll = QScrollArea()
+        self._catalog_scroll = catalog_scroll
         catalog_scroll.setWidgetResizable(True)
         catalog_scroll.setFrameShape(QScrollArea.NoFrame)
         catalog_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        catalog_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._catalog_inner = QWidget()
         self._catalog_inner.setStyleSheet("background: transparent;")
+        self._catalog_inner.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         self._catalog_grid = QGridLayout(self._catalog_inner)
         self._catalog_grid.setSpacing(18)
         self._catalog_grid.setContentsMargins(20, 20, 20, 20)
@@ -300,16 +319,34 @@ class AwardsCardsPage(QWidget):
 
         root.addWidget(self.stack, 1)
 
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        self.view_combo.currentIndexChanged.connect(self._on_view_changed)
+        self._sync_stack_to_view()
+        # Первичная отрисовка каталога после того, как у страницы есть геометрия (иначе сетка в QScrollArea бывает пустой).
+        QTimer.singleShot(0, self.refresh)
+
     # ── data loading ─────────────────────────────────────────────────
 
     def refresh(self):
         _, type_value = AWARD_TYPE_FILTER[self.filter_combo.currentIndex()]
+        print(f"[refresh] запрос наград, фильтр={type_value!r}", flush=True)
         try:
             awards = self.api.get_awards(award_type=type_value)
         except APIError as e:
+            print(f"[refresh] ОШИБКА API: {e}")
             QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось загрузить награды.\n{e}")
             return
 
+        # Стабильная сортировка для каталога/таблицы (по названию, затем по ID)
+        awards = sorted(
+            awards or [],
+            key=lambda a: (
+                str(a.get("name") or "").strip().lower(),
+                int(a.get("id") or 0),
+            ),
+        )
+
+        print(f"[refresh] получено {len(awards)} наград")
         self._rebuild_catalog(awards)
 
         self.table.setSortingEnabled(False)
@@ -330,32 +367,81 @@ class AwardsCardsPage(QWidget):
         self.table.setSortingEnabled(True)
 
     def _rebuild_catalog(self, awards: list) -> None:
-        if not self._catalog_grid:
+        print(f"[rebuild] вызван, наград={len(awards)}, grid={self._catalog_grid is not None}", flush=True)
+        # В PyQt5 bool(QGridLayout)==False пока в сетке 0 элементов — нельзя писать «if not layout».
+        if self._catalog_grid is None:
+            print("[rebuild] grid=None — выход", flush=True)
             return
+        # Удаляем старые карточки
+        old_n = self._catalog_grid.count()
         while self._catalog_grid.count():
             item = self._catalog_grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        print(f"[rebuild] очищено {old_n} старых карточек", flush=True)
 
         cols = self.GRID_COLS
         if not awards:
+            print("[rebuild] список пуст — каталог не заполняется", flush=True)
+            hint = QLabel(
+                "Награды не найдены (пустой ответ от сервера или слишком строгий фильтр).\n"
+                "Проверьте импорт БД и что API отдаёт список: GET /api/awards/",
+            )
+            hint.setWordWrap(True)
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setStyleSheet("color: #334155; font-size: 14px; padding: 40px 24px;")
+            self._catalog_grid.addWidget(hint, 0, 0, 1, cols)
+            if self._catalog_scroll is not None:
+                self._catalog_scroll.updateGeometry()
             return
+        print(f"[rebuild] создаём {len(awards)} карточек по {cols} в ряд", flush=True)
+        created = 0
         for i, award in enumerate(awards):
             aid = int(award.get("id", 0))
             name = str(award.get("name", ""))
-            card = _AwardCatalogCard(aid, name, self.api)
-            card.clicked_id.connect(self.award_selected.emit)
-            r, c = divmod(i, cols)
-            self._catalog_grid.addWidget(card, r, c, Qt.AlignTop | Qt.AlignLeft)
+            has_img = bool(award.get("has_image"))
+            has_img_back = bool(award.get("has_image_back"))
+            try:
+                card = _AwardCatalogCard(
+                    aid, name, self.api,
+                    has_image=has_img,
+                    has_image_back=has_img_back,
+                    parent=self._catalog_inner,
+                )
+                card.clicked_id.connect(self.award_selected.emit)
+                r, c = divmod(i, cols)
+                self._catalog_grid.addWidget(card, r, c)
+                card.show()
+                created += 1
+            except Exception as _card_err:
+                import traceback
+                print(f"[CARD ERROR] id={aid}: {_card_err}", flush=True)
+                traceback.print_exc()
 
         nrows = (len(awards) + cols - 1) // cols
-        for r in range(nrows):
-            self._catalog_grid.setRowStretch(r, 1 if r == nrows - 1 else 0)
+        print(f"[rebuild] создано={created}, итого в сетке: {self._catalog_grid.count()} виджетов, {nrows} рядов", flush=True)
+        # Принудительно пересчитаем геометрию контейнера
+        if self._catalog_inner is not None:
+            self._catalog_inner.adjustSize()
+            self._catalog_inner.updateGeometry()
+            print(f"[rebuild] inner.size={self._catalog_inner.size().width()}x{self._catalog_inner.size().height()}, "
+                  f"sizeHint={self._catalog_inner.sizeHint().width()}x{self._catalog_inner.sizeHint().height()}", flush=True)
+        if self._catalog_scroll is not None:
+            self._catalog_scroll.updateGeometry()
 
     def showEvent(self, event):
+        print("[showEvent] AwardsCardsPage показана")
         super().showEvent(event)
-        self.refresh()
+        QTimer.singleShot(0, self.refresh)
+
+    def _sync_stack_to_view(self):
+        mode = self.view_combo.currentData()
+        if mode is None:
+            mode = "catalog"
+        idx = 0 if mode == "catalog" else 1
+        if 0 <= idx < self.stack.count():
+            self.stack.setCurrentIndex(idx)
 
     @staticmethod
     def _item(text: str) -> QTableWidgetItem:
@@ -364,8 +450,9 @@ class AwardsCardsPage(QWidget):
         return item
 
     @staticmethod
-    def _numeric_id_item(text: str) -> QTableWidgetItem:
-        item = _NumericSortItem(text)
+    def _numeric_id_item(text: str) -> NumericSortTableItem:
+        sort_val = int(text) if text.isdigit() else None
+        item = NumericSortTableItem(text, sort_val)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
 
@@ -375,8 +462,7 @@ class AwardsCardsPage(QWidget):
         self.refresh()
 
     def _on_view_changed(self):
-        mode = self.view_combo.currentData()
-        self.stack.setCurrentIndex(0 if mode == "catalog" else 1)
+        self._sync_stack_to_view()
 
     def _on_double_click(self, index):
         row = index.row()

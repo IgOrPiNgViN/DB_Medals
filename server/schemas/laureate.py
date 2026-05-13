@@ -47,9 +47,8 @@ class LaureateAwardBase(BaseModel):
     laureate_id: int
     award_id: int
     assigned_date: Optional[date] = None
-    bulletin_number: Optional[str] = None
     initiator: Optional[str] = None
-    status: Optional[str] = "assigned"
+    status: Optional[str] = "nominated"
 
 
 class LaureateAwardCreate(LaureateAwardBase):

@@ -9,7 +9,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional
-from datetime import date
+from datetime import date, timedelta
 
 from database import get_db
 from config import CONSENT_TEMPLATE_PATH
@@ -50,22 +50,25 @@ def list_laureates(category: Optional[str] = None, db: Session = Depends(get_db)
 
 @router.get("/laureate-awards/by-bulletin")
 def list_laureate_awards_by_bulletin_number(
-    bulletin_number: str = Query(..., min_length=1, description="Номер бюллетеня (как в карточке связки)"),
+    bulletin_number: str = Query(..., min_length=1, description="Номер бюллетеня"),
     db: Session = Depends(get_db),
 ):
     """
-    Все связки лауреат–награда с указанным номером бюллетеня — для конструктора бюллетеня (раздел «Награждение»).
+    Все связки лауреат–награда с указанным номером бюллетеня.
+    Источник правды — voting_bulletin_number в laureate_lifecycles.
     """
     bn = (bulletin_number or "").strip()
     if not bn:
         return []
     rows = (
         db.query(LaureateAward)
+        .join(LaureateLifecycle, LaureateLifecycle.laureate_award_id == LaureateAward.id)
         .options(
             joinedload(LaureateAward.laureate),
             joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle),
         )
-        .filter(LaureateAward.bulletin_number == bn)
+        .filter(LaureateLifecycle.voting_bulletin_number == bn)
         .order_by(LaureateAward.id)
         .all()
     )
@@ -76,7 +79,7 @@ def list_laureate_awards_by_bulletin_number(
             "full_name": la.laureate.full_name if la.laureate else "",
             "award_name": la.award.name if la.award else "",
             "award_id": la.award_id,
-            "bulletin_number": la.bulletin_number,
+            "bulletin_number": la.lifecycle.voting_bulletin_number if la.lifecycle else None,
             "initiator": la.initiator,
         }
         for la in rows
@@ -106,7 +109,6 @@ def get_laureate_award_context(laureate_award_id: int, db: Session = Depends(get
         "award_type": la.award.award_type.value if la.award and la.award.award_type else None,
         "assigned_date": la.assigned_date,
         "status": la.status,
-        "bulletin_number": la.bulletin_number,
         "initiator": la.initiator,
     }
 
@@ -130,6 +132,8 @@ def awards_laureates_report(db: Session = Depends(get_db)):
     for a in awards:
         laureates = []
         for la in a.laureate_awards:
+            if la.laureate is None:
+                continue
             laureates.append({
                 "laureate_award_id": la.id,
                 "laureate_id": la.laureate.id,
@@ -161,6 +165,8 @@ def incomplete_lifecycle_report(db: Session = Depends(get_db)):
     )
     result = []
     for la in la_list:
+        if la.laureate is None or la.award is None:
+            continue
         lc = la.lifecycle
         if lc is None:
             result.append({
@@ -205,9 +211,9 @@ def statistics_report(
         func.count(Laureate.id).label("count"),
     )
     if from_date:
-        q = q.filter(Laureate.created_at >= from_date)
+        q = q.filter(func.date(Laureate.created_at) >= from_date)
     if to_date:
-        q = q.filter(Laureate.created_at <= to_date)
+        q = q.filter(func.date(Laureate.created_at) <= to_date)
     rows = q.group_by(Laureate.category).all()
     return [
         {"category": r.category.value if r.category else None, "count": r.count}
@@ -253,15 +259,6 @@ def link_award(
     obj = LaureateAward(**payload.model_dump())
     obj.laureate_id = laureate_id
     db.add(obj)
-    db.flush()
-    if obj.bulletin_number:
-        lc = (
-            db.query(LaureateLifecycle)
-            .filter(LaureateLifecycle.laureate_award_id == obj.id)
-            .first()
-        )
-        if lc is not None:
-            lc.voting_bulletin_number = obj.bulletin_number
     db.commit()
     db.refresh(obj)
     return obj
@@ -295,8 +292,6 @@ def create_lifecycle(
         raise HTTPException(status_code=409, detail="Lifecycle already exists")
     obj = LaureateLifecycle(**payload.model_dump())
     obj.laureate_award_id = laureate_award_id
-    if not obj.voting_bulletin_number and la.bulletin_number:
-        obj.voting_bulletin_number = la.bulletin_number
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -409,14 +404,16 @@ def delete_consent_file(laureate_award_id: int, db: Session = Depends(get_db)):
 
 def _fill_doc_placeholders(doc: Document, full_name: str) -> None:
     # В шаблоне стоят линии из подчёркиваний — заменяем их на ФИО.
+    # Работаем на уровне runs, чтобы не потерять форматирование параграфа.
     pattern = re.compile(r"_{3,}")
 
     def replace_in_paragraphs(paragraphs):
         for p in paragraphs:
-            text = p.text
-            if not text or "_" not in text:
+            if "_" not in p.text:
                 continue
-            p.text = pattern.sub(full_name, text)
+            for run in p.runs:
+                if "_" in run.text:
+                    run.text = pattern.sub(full_name, run.text)
 
     replace_in_paragraphs(doc.paragraphs)
     for table in doc.tables:

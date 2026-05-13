@@ -1,4 +1,9 @@
 from datetime import date, datetime
+
+# Алиас нужен, чтобы избежать конфликта имён на Python 3.14 (PEP 649):
+# поле named `date` с типом `date` — ленивое вычисление аннотации
+# находит имя поля вместо типа из datetime.
+_Date = date
 from typing import Optional, List
 
 from pydantic import BaseModel, ConfigDict
@@ -127,7 +132,7 @@ class VoteRead(VoteBase):
 class ProtocolBase(BaseModel):
     bulletin_id: int
     number: str
-    date: Optional[date] = None
+    date: Optional[_Date] = None
     status: Optional[ProtocolStatus] = ProtocolStatus.DRAFT
     details: Optional[str] = None
 
@@ -138,7 +143,7 @@ class ProtocolCreate(ProtocolBase):
 
 class ProtocolUpdate(BaseModel):
     number: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[_Date] = None
     status: Optional[ProtocolStatus] = None
     details: Optional[str] = None
 
@@ -175,7 +180,7 @@ class PPZSubmissionBase(BaseModel):
     laureate_award_id: int
     authorized_member_id: int
     submission_number: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[_Date] = None
     details: Optional[str] = None
 
 

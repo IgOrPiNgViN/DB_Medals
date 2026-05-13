@@ -8,6 +8,7 @@ from PyQt5.QtGui import QColor, QFont
 
 from api_client import APIError
 from ui.print_helpers import print_table, pdf_table
+from ui.numeric_sort_item import NumericSortTableItem
 
 
 class CreateMemberDialog(QDialog):
@@ -71,7 +72,6 @@ class CommitteeListPage(QWidget):
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
         self.api = api_client
-        self._member_ids: list[int] = []
         self._build_ui()
         self.load_data()
 
@@ -118,6 +118,8 @@ class CommitteeListPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
         bottom = QHBoxLayout()
@@ -146,12 +148,11 @@ class CommitteeListPage(QWidget):
         self._populate_table(members)
 
     def _populate_table(self, members: list):
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        self._member_ids.clear()
 
         for row_idx, m in enumerate(members):
             self.table.insertRow(row_idx)
-            self._member_ids.append(m["id"])
 
             is_active = m.get("is_active", False)
             bg = self.COLOR_ACTIVE if is_active else self.COLOR_INACTIVE
@@ -165,11 +166,16 @@ class CommitteeListPage(QWidget):
                 status_text,
             ]
             for col, text in enumerate(items):
-                item = QTableWidgetItem(text)
+                if col == 0:
+                    item = NumericSortTableItem(text, row_idx + 1)
+                    item.setData(Qt.UserRole, int(m["id"]))
+                else:
+                    item = QTableWidgetItem(text)
                 item.setBackground(bg)
                 if col == 0:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col, item)
+        self.table.setSortingEnabled(True)
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -193,8 +199,10 @@ class CommitteeListPage(QWidget):
 
     def _on_double_click(self, index):
         row = index.row()
-        if 0 <= row < len(self._member_ids):
-            self.member_selected.emit(self._member_ids[row])
+        it = self.table.item(row, 0)
+        mid = it.data(Qt.UserRole) if it else None
+        if mid is not None:
+            self.member_selected.emit(int(mid))
 
     def _on_assign_signer(self):
         member_id = self._selected_member_id()
@@ -221,6 +229,6 @@ class CommitteeListPage(QWidget):
         if not rows:
             return None
         row = rows[0].row()
-        if 0 <= row < len(self._member_ids):
-            return self._member_ids[row]
-        return None
+        it = self.table.item(row, 0)
+        mid = it.data(Qt.UserRole) if it else None
+        return int(mid) if mid is not None else None

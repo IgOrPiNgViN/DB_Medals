@@ -8,6 +8,7 @@ from PyQt5.QtGui import QPainter, QColor, QFont, QPen
 from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 
 CATEGORY_DISPLAY = {
     "employee": "Сотрудники",
@@ -158,6 +159,8 @@ class StatisticsPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setMaximumWidth(400)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         mid.addWidget(self.table)
 
         self.chart = BarChartWidget()
@@ -210,6 +213,7 @@ class StatisticsPage(QWidget):
 
     def _fill_table(self):
         total = sum(r.get("count", 0) for r in self._stats)
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self._stats))
         chart_data: list[tuple[str, int]] = []
 
@@ -227,12 +231,13 @@ class StatisticsPage(QWidget):
                 pct = (count / total * 100) if total else 0
 
             self.table.setItem(i, 0, self._make_item(display))
-            self.table.setItem(i, 1, self._make_item(str(count)))
-            self.table.setItem(i, 2, self._make_item(f"{pct:.1f}%"))
+            self.table.setItem(i, 1, NumericSortTableItem(str(count), count))
+            self.table.setItem(i, 2, NumericSortTableItem(f"{pct:.1f}%", pct))
             chart_data.append((display, count))
 
         self.chart.set_data(chart_data)
         self.total_label.setText(f"Всего лауреатов: {total}")
+        self.table.setSortingEnabled(True)
 
     @staticmethod
     def _make_item(text: str) -> QTableWidgetItem:

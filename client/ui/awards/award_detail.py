@@ -8,10 +8,11 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QDate, QTimer
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 
 from api_client import APIClient, APIError
 from ui.tab_helpers import configure_tab_bar_no_clip
+from ui.numeric_sort_item import NumericSortTableItem
 
 APPROVAL_TYPES = ["НК", "Геральдисты", "Родственники", "Спонсоры"]
 
@@ -452,6 +453,12 @@ class _CharacteristicsTab(QWidget):
             p = QPixmap()
             if p.loadFromData(data):
                 pm = p.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                img = QImage.fromData(data)
+                if not img.isNull():
+                    pm = QPixmap.fromImage(img).scaled(
+                        200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+                    )
         lbl.setPixmap(pm)
 
     def _refresh_images(self) -> None:
@@ -807,6 +814,8 @@ class _ApprovalsTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
     def load(self, award_id: int):
@@ -817,14 +826,16 @@ class _ApprovalsTab(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить согласования.\n{e}")
             return
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self.table.setRowCount(len(items))
         for row, item in enumerate(items):
-            self.table.setItem(row, 0, QTableWidgetItem(str(item.get("id", ""))))
+            self.table.setItem(row, 0, NumericSortTableItem(str(item.get("id", "")), item.get("id")))
             self.table.setItem(row, 1, QTableWidgetItem(item.get("approval_type", "")))
             self.table.setItem(row, 2, QTableWidgetItem(item.get("date", "")))
             self.table.setItem(row, 3, QTableWidgetItem(item.get("status", "")))
             self.table.setItem(row, 4, QTableWidgetItem(item.get("comment", "")))
+        self.table.setSortingEnabled(True)
 
     def _on_add(self):
         if self.award_id is None:
@@ -894,6 +905,8 @@ class _ProductionsTab(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.doubleClicked.connect(self._on_row_double_clicked)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
     def load(self, award_id: int):
@@ -905,18 +918,25 @@ class _ProductionsTab(QWidget):
             return
 
         self._items = items
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self.table.setRowCount(len(items))
         for row, item in enumerate(items):
-            self.table.setItem(row, 0, QTableWidgetItem(str(item.get("id", ""))))
+            id_cell = NumericSortTableItem(str(item.get("id", "")), item.get("id"))
+            try:
+                id_cell.setData(Qt.UserRole, int(item.get("id")))
+            except (TypeError, ValueError):
+                pass
+            self.table.setItem(row, 0, id_cell)
             api_ct = item.get("component_type", "") or ""
             comp_ru = _PRODUCTION_COMPONENT_API_TO_RU.get(api_ct, api_ct)
             self.table.setItem(row, 1, QTableWidgetItem(comp_ru))
             self.table.setItem(row, 2, QTableWidgetItem(item.get("supplier") or ""))
             self.table.setItem(row, 3, QTableWidgetItem(str(item.get("order_date") or "")))
             self.table.setItem(row, 4, QTableWidgetItem(str(item.get("delivery_date") or "")))
-            self.table.setItem(row, 5, QTableWidgetItem(str(item.get("quantity", ""))))
+            self.table.setItem(row, 5, NumericSortTableItem(str(item.get("quantity", "")), item.get("quantity")))
             self.table.setItem(row, 6, QTableWidgetItem(item.get("status") or ""))
+        self.table.setSortingEnabled(True)
 
     def _on_row_double_clicked(self, index):
         r = index.row()
@@ -947,23 +967,39 @@ class _ProductionsTab(QWidget):
             except APIError as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось добавить заказ.\n{e}")
 
-    def _current_production_id(self) -> int | None:
-        row = self.table.currentRow()
-        if row < 0 or row >= len(self._items):
+    def _production_id_from_row(self, row: int) -> int | None:
+        if row < 0:
             return None
-        pid = self._items[row].get("id")
-        return int(pid) if pid is not None else None
+        it = self.table.item(row, 0)
+        if not it:
+            return None
+        pid = it.data(Qt.UserRole)
+        if pid is None:
+            try:
+                pid = int(it.text())
+            except ValueError:
+                return None
+        try:
+            return int(pid)
+        except (TypeError, ValueError):
+            return None
+
+    def _current_production_id(self) -> int | None:
+        return self._production_id_from_row(self.table.currentRow())
 
     def _on_edit(self):
         if self.award_id is None:
             return
-        row = self.table.currentRow()
-        if row < 0 or row >= len(self._items):
+        pid = self._production_id_from_row(self.table.currentRow())
+        if pid is None:
             QMessageBox.information(self, "Изменение", "Выберите строку в таблице.")
             return
-        item = self._items[row]
-        pid = item.get("id")
-        if pid is None:
+        item = next(
+            (x for x in self._items if x.get("id") == pid or str(x.get("id")) == str(pid)),
+            None,
+        )
+        if item is None:
+            QMessageBox.information(self, "Изменение", "Не удалось найти запись по выбранной строке.")
             return
         dlg = _AddRowDialog(
             "Изменить заказ на производство",

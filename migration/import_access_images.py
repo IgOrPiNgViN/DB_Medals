@@ -156,7 +156,9 @@ def _extract_images_from_access(accdb: Path) -> dict[str, bytes]:
         for field_name in attachment_fields:
             try:
                 att_rs = rs.Fields(field_name).Value
-                if att_rs.RecordCount == 0:
+                # BOF+EOF — единственный надёжный способ проверить пустой
+                # dynaset-рекордсет DAO (RecordCount может вернуть -1)
+                if att_rs.BOF and att_rs.EOF:
                     att_rs.Close()
                     continue
                 att_rs.MoveFirst()

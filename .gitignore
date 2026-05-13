@@ -1,0 +1,64 @@
+# Локальные фото наград (тяжёлые, не для репозитория)
+Фото/
+фото/
+
+# Выгрузки картинок из Access
+migration/extracted_images/
+award_images/
+
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Тесты / покрытие
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Переменные окружения и секреты
+.env
+.env.*
+!.env.example
+
+# Локальные БД и дампы (при необходимости закоммитьте шаблон — уберите строку)
+*.sqlite3
+*.db
+
+# Access (часто большие файлы рядом с проектом)
+*.accdb
+*.mdb
+*.laccdb
+
+# Локальные настройки ассистентов
+.claude/settings.local.json
+
+# IDE / редактор
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Логи
+*.log

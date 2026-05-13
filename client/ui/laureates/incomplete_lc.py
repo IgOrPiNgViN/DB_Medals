@@ -7,6 +7,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QBrush
 
 from api_client import APIError
+from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 
 STAGE_LABELS = {
@@ -89,6 +90,8 @@ class IncompleteLCPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         layout.addWidget(self.table)
 
         vote_section = QHBoxLayout()
@@ -121,11 +124,12 @@ class IncompleteLCPage(QWidget):
                 or r.get("reason") == "lifecycle not created"
             ]
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(filtered))
         vote_count = 0
         for row_idx, r in enumerate(filtered):
             la_id = r.get("laureate_award_id", "")
-            self.table.setItem(row_idx, 0, self._make_item(str(la_id)))
+            self.table.setItem(row_idx, 0, NumericSortTableItem(str(la_id), la_id))
             self.table.setItem(row_idx, 1, self._make_item(r.get("laureate_name", "")))
             self.table.setItem(row_idx, 2, self._make_item(r.get("award_name", "")))
 
@@ -169,6 +173,7 @@ class IncompleteLCPage(QWidget):
                     )),
                 )
 
+        self.table.setSortingEnabled(True)
         self.vote_count_label.setText(str(vote_count))
         self.status_label.setText(f"Строк: {len(filtered)}")
 

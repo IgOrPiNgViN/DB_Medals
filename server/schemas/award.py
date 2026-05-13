@@ -1,4 +1,6 @@
 from datetime import date, datetime
+
+_Date = date  # алиас — поле named `date` с типом `date` конфликтует на Python 3.14 (PEP 649)
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -112,7 +114,7 @@ class AwardApprovalBase(BaseModel):
     approval_type: ApprovalType
     approver_name: Optional[str] = None
     status: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[_Date] = None
     details: Optional[str] = None
 
 

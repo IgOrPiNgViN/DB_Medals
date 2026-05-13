@@ -8,6 +8,7 @@ from PyQt5.QtGui import QColor
 
 from api_client import APIClient, APIError
 from ui.tab_helpers import configure_tab_bar_no_clip
+from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 
 AWARD_TABS = [
@@ -92,6 +93,8 @@ class LifecyclePage(QWidget):
         table.horizontalHeader().setStretchLastSection(True)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.doubleClicked.connect(self._on_double_click)
+        table.setSortingEnabled(True)
+        table.horizontalHeader().setSortIndicatorShown(True)
         return table
 
     # ── data ─────────────────────────────────────────────────────────
@@ -117,10 +120,11 @@ class LifecyclePage(QWidget):
 
         for type_key, table in self.tables.items():
             items = grouped.get(type_key, [])
+            table.setSortingEnabled(False)
             table.setRowCount(0)
             table.setRowCount(len(items))
             for row, item in enumerate(items):
-                table.setItem(row, 0, QTableWidgetItem(str(item.get("id", ""))))
+                table.setItem(row, 0, NumericSortTableItem(str(item.get("id", "")), item.get("id")))
                 table.setItem(row, 1, QTableWidgetItem(item.get("name", "")))
                 table.setItem(row, 2, QTableWidgetItem(item.get("award_type", "")))
                 table.setItem(row, 3, QTableWidgetItem(item.get("establishment", "")))
@@ -128,6 +132,7 @@ class LifecyclePage(QWidget):
                 table.setItem(row, 5, QTableWidgetItem(item.get("approval", "")))
                 table.setItem(row, 6, QTableWidgetItem(item.get("production", "")))
                 table.setItem(row, 7, QTableWidgetItem(item.get("status", "")))
+            table.setSortingEnabled(True)
 
     # ── slots ────────────────────────────────────────────────────────
 
