@@ -1,0 +1,49 @@
+# API + PostgreSQL в одной Docker-сети (бэкенд для клиента PyQt5 и Swagger).
+# Пароль БД: задайте POSTGRES_PASSWORD в файле .env или в окружении перед запуском.
+# Явное имя проекта: иначе при пути с кириллицей Compose может выдать «project name must not be empty».
+name: oon-pkr-awards
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: awards-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: awards_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d awards_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: awards-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@db:5432/awards_db
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "8000"
+      BACKUP_DIR: /app/server/backups
+      CONSENT_TEMPLATE_PATH: /app/templates/consent.docx
+    volumes:
+      - api_backups:/app/server/backups
+      # Реальный шаблон согласия (вместо пустого из Dockerfile) — раскомментируйте при наличии файла в корне:
+      # - "./Согласие на обработку пер данных Награждения.docx:/app/templates/consent.docx:ro"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  api_backups:

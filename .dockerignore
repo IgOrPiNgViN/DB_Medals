@@ -1,0 +1,13 @@
+.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv
+**/venv
+client/
+docs/
+*.accdb
+.vscode
+.idea
+terminals/
+mcps/
