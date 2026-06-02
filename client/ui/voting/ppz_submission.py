@@ -3,6 +3,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QGroupBox, QFormLayout, QMessageBox, QTextEdit, QFileDialog,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -18,8 +19,14 @@ class PPZSubmissionPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._la_links: list[dict] = []
+        self._ppz_items: list[dict] = []
         self._build_ui()
         self._load_laureates()
+        self._load_ppz_table()
+
+    def refresh_data(self):
+        self._load_laureates()
+        self._load_ppz_table()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -76,6 +83,27 @@ class PPZSubmissionPage(QWidget):
 
         export_row.addStretch()
         root.addLayout(export_row)
+
+        list_group = QGroupBox("Сформированные представления")
+        lg = QVBoxLayout(list_group)
+        self.ppz_table = QTableWidget()
+        self.ppz_table.setColumnCount(4)
+        self.ppz_table.setHorizontalHeaderLabels(
+            ["ID", "Связка лауреат–награда", "Уполномоченный", "Дата"],
+        )
+        self.ppz_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.ppz_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ppz_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ppz_table.setMaximumHeight(180)
+        lg.addWidget(self.ppz_table)
+        ppz_btns = QHBoxLayout()
+        self.btn_delete_ppz = QPushButton("Удалить выбранное представление")
+        self.btn_delete_ppz.setProperty("class", "btn-danger")
+        self.btn_delete_ppz.clicked.connect(self._on_delete_ppz)
+        ppz_btns.addWidget(self.btn_delete_ppz)
+        ppz_btns.addStretch()
+        lg.addLayout(ppz_btns)
+        root.addWidget(list_group)
 
         root.addStretch(1)
 
@@ -148,8 +176,63 @@ class PPZSubmissionPage(QWidget):
                 "Успех",
                 f"Представление сформировано (ID {created.get('id', '—')}). Можно скачать DOCX.",
             )
+            self._load_ppz_table()
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать представление:\n{e}")
+
+    def _load_ppz_table(self):
+        try:
+            self._ppz_items = self.api.list_ppz_submissions()
+        except APIError:
+            self._ppz_items = []
+        self.ppz_table.setRowCount(0)
+        for i, item in enumerate(self._ppz_items):
+            self.ppz_table.insertRow(i)
+            pid = int(item["id"])
+            id_item = QTableWidgetItem(str(pid))
+            id_item.setData(Qt.UserRole, pid)
+            self.ppz_table.setItem(i, 0, id_item)
+            self.ppz_table.setItem(
+                i, 1, QTableWidgetItem(str(item.get("laureate_award_id", "—"))),
+            )
+            self.ppz_table.setItem(
+                i, 2, QTableWidgetItem(str(item.get("authorized_member_id", "—"))),
+            )
+            self.ppz_table.setItem(
+                i, 3, QTableWidgetItem(str(item.get("submission_date", item.get("date", "—")))),
+            )
+
+    def _on_delete_ppz(self):
+        rows = self.ppz_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Удаление", "Выберите представление в таблице.")
+            return
+        it = self.ppz_table.item(rows[0].row(), 0)
+        ppz_id = it.data(Qt.UserRole) if it else None
+        if ppz_id is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить представление ППЗ ID {ppz_id}?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_ppz_submission(int(ppz_id))
+        except APIError as e:
+            if e.status_code == 404:
+                self._load_ppz_table()
+                QMessageBox.information(
+                    self,
+                    "Удаление",
+                    "Запись уже удалена. Список обновлён.",
+                )
+                return
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить представление:\n{e.detail}")
+            return
+        self._load_ppz_table()
 
     def _build_document_html(self) -> str:
         body = self.info_display.toPlainText().strip()

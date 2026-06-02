@@ -97,6 +97,11 @@ class CommitteeListPage(QWidget):
         self.btn_create.clicked.connect(self._on_create)
         toolbar.addWidget(self.btn_create)
 
+        self.btn_delete = QPushButton("Удалить")
+        self.btn_delete.setProperty("class", "btn-danger")
+        self.btn_delete.clicked.connect(self._on_delete)
+        toolbar.addWidget(self.btn_delete)
+
         self.btn_print = QPushButton("Печать")
         self.btn_print.clicked.connect(self._on_print)
         toolbar.addWidget(self.btn_print)
@@ -194,6 +199,29 @@ class CommitteeListPage(QWidget):
             self.api.create_committee_member(data)
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать запись:\n{e}")
+            return
+        self.load_data()
+
+    def _on_delete(self):
+        member_id = self._selected_member_id()
+        if member_id is None:
+            QMessageBox.information(self, "Удаление", "Выберите члена НК в таблице.")
+            return
+        rows = self.table.selectionModel().selectedRows()
+        row = rows[0].row()
+        name = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить члена НК «{name}»?\nЭто действие необратимо.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_committee_member(member_id)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить:\n{e.detail}")
             return
         self.load_data()
 

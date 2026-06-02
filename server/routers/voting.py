@@ -188,6 +188,9 @@ def update_bulletin(
 @router.delete("/bulletins/{bulletin_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_bulletin(bulletin_id: int, db: Session = Depends(get_db)):
     obj = _get_bulletin_or_404(db, bulletin_id)
+    protocol = db.query(Protocol).filter(Protocol.bulletin_id == bulletin_id).first()
+    if protocol is not None:
+        db.delete(protocol)
     db.delete(obj)
     db.commit()
 
@@ -228,6 +231,13 @@ def add_question(
     db.commit()
     db.refresh(obj)
     return obj
+
+
+@router.delete("/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_question(question_id: int, db: Session = Depends(get_db)):
+    obj = _get_question_or_404(db, question_id)
+    db.delete(obj)
+    db.commit()
 
 
 # ── Distribution ────────────────────────────────────────────────────────────
@@ -497,6 +507,15 @@ def update_protocol(
     return obj
 
 
+@router.delete("/protocols/{protocol_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_protocol(protocol_id: int, db: Session = Depends(get_db)):
+    obj = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    db.delete(obj)
+    db.commit()
+
+
 @router.get("/protocols/{protocol_id}/docx")
 def protocol_docx(protocol_id: int, db: Session = Depends(get_db)):
     """DOCX-версия протокола с результатами голосования."""
@@ -566,6 +585,15 @@ def list_extracts(db: Session = Depends(get_db)):
     return db.query(ProtocolExtract).all()
 
 
+@router.delete("/extracts/{extract_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_extract(extract_id: int, db: Session = Depends(get_db)):
+    obj = db.query(ProtocolExtract).filter(ProtocolExtract.id == extract_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Extract not found")
+    db.delete(obj)
+    db.commit()
+
+
 @router.get("/extracts/{extract_id}/docx")
 def extract_docx(extract_id: int, db: Session = Depends(get_db)):
     e = (
@@ -617,6 +645,15 @@ def create_ppz_submission(payload: PPZSubmissionCreate, db: Session = Depends(ge
 @router.get("/ppz-submissions", response_model=List[PPZSubmissionRead])
 def list_ppz_submissions(db: Session = Depends(get_db)):
     return db.query(PPZSubmission).all()
+
+
+@router.delete("/ppz-submissions/{ppz_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_ppz_submission(ppz_id: int, db: Session = Depends(get_db)):
+    obj = db.query(PPZSubmission).filter(PPZSubmission.id == ppz_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="PPZ submission not found")
+    db.delete(obj)
+    db.commit()
 
 
 @router.get("/ppz-submissions/{ppz_id}/docx")

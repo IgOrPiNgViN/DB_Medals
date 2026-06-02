@@ -18,9 +18,19 @@ COLOR_NOT_SENT = QColor("#E0E0E0")
 class DetailedMonitoringDialog(QDialog):
     """Detailed view of bulletin distribution for a single bulletin."""
 
-    def __init__(self, bulletin_label: str, monitoring_data: list, api_client, parent=None):
+    def __init__(
+        self,
+        bulletin_id: int,
+        bulletin_label: str,
+        monitoring_data: list,
+        api_client,
+        parent_page=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.api = api_client
+        self._bulletin_id = bulletin_id
+        self._parent_page = parent_page
         self._monitoring = monitoring_data
         self.setWindowTitle(f"Мониторинг — {bulletin_label}")
         self.setMinimumSize(560, 450)
@@ -56,7 +66,19 @@ class DetailedMonitoringDialog(QDialog):
 
         self._populate()
 
-    def _populate(self):
+    def _reload_from_server(self) -> bool:
+        try:
+            self._monitoring = self.api.get_bulletin_monitoring(self._bulletin_id)
+        except APIError as e:
+            QMessageBox.critical(
+                self, "Ошибка", f"Не удалось обновить данные:\n{e.detail}",
+            )
+            return False
+        if self._parent_page is not None:
+            self._parent_page.refresh_bulletin_monitoring(self._bulletin_id, self._monitoring)
+        return True
+
+    def _populate(self, selected_dist_ids: set[int] | None = None):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for i, entry in enumerate(self._monitoring):
@@ -83,6 +105,10 @@ class DetailedMonitoringDialog(QDialog):
                 color = COLOR_NOT_SENT
             for c in range(5):
                 self.table.item(i, c).setBackground(color)
+
+            if selected_dist_ids and dist_id is not None and int(dist_id) in selected_dist_ids:
+                self.table.selectRow(i)
+
         self.table.setSortingEnabled(True)
 
     def _mark_selected(self, sent: bool = False, received: bool = False):
@@ -91,7 +117,7 @@ class DetailedMonitoringDialog(QDialog):
             QMessageBox.information(self, "Мониторинг", "Выберите строку.")
             return
         today = QDate.currentDate().toString("yyyy-MM-dd")
-        ok = 0
+        updated_ids: set[int] = set()
         for r in rows:
             row = r.row()
             id_item = self.table.item(row, 0)
@@ -109,12 +135,12 @@ class DetailedMonitoringDialog(QDialog):
                 payload["received_date"] = today
             try:
                 self.api.update_distribution(int(dist_id), payload)
-                ok += 1
+                updated_ids.add(int(dist_id))
             except APIError as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось обновить рассылку:\n{e.detail}")
                 return
-        if ok:
-            QMessageBox.information(self, "Мониторинг", "Обновлено. Закройте окно и нажмите «Показать мониторинг» для обновления таблицы.")
+        if updated_ids and self._reload_from_server():
+            self._populate(selected_dist_ids=updated_ids)
 
 
 class MonitoringPage(QWidget):
@@ -168,7 +194,7 @@ class MonitoringPage(QWidget):
         self.btn_enter_results.clicked.connect(self._on_enter_results)
         bottom.addWidget(self.btn_enter_results)
 
-        self.btn_show_monitoring = QPushButton("Показать мониторинг")
+        self.btn_show_monitoring = QPushButton("Обновить")
         self.btn_show_monitoring.clicked.connect(self.load_data)
         bottom.addWidget(self.btn_show_monitoring)
 
@@ -185,6 +211,9 @@ class MonitoringPage(QWidget):
         root.addLayout(bottom)
 
     # ── data ─────────────────────────────────────────────────────────────
+
+    def refresh_data(self):
+        self.load_data()
 
     def load_data(self):
         try:
@@ -205,6 +234,19 @@ class MonitoringPage(QWidget):
             except APIError:
                 self._monitoring_cache[b["id"]] = []
 
+        self._build_matrix()
+
+    def refresh_bulletin_monitoring(self, bulletin_id: int, monitoring: list | None = None):
+        """Обновить кэш и матрицу для одного бюллетеня (без полной перезагрузки страницы)."""
+        if monitoring is not None:
+            self._monitoring_cache[bulletin_id] = monitoring
+        else:
+            try:
+                self._monitoring_cache[bulletin_id] = self.api.get_bulletin_monitoring(
+                    bulletin_id,
+                )
+            except APIError:
+                return
         self._build_matrix()
 
     def _build_matrix(self):
@@ -279,7 +321,9 @@ class MonitoringPage(QWidget):
         b = self._bulletins[col - 1]
         mon = self._monitoring_cache.get(b["id"], [])
         label = f"Бюллетень №{b.get('number', '?')}"
-        dlg = DetailedMonitoringDialog(label, mon, self.api, self)
+        dlg = DetailedMonitoringDialog(
+            b["id"], label, mon, self.api, parent_page=self, parent=self,
+        )
         dlg.exec_()
 
     def _on_enter_results(self):

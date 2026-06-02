@@ -227,6 +227,11 @@ class LaureateCardsPage(QWidget):
         btn_new.clicked.connect(self._on_create)
         toolbar.addWidget(btn_new)
 
+        btn_delete = QPushButton("Удалить лауреата")
+        btn_delete.setProperty("class", "btn-danger")
+        btn_delete.clicked.connect(self._on_delete)
+        toolbar.addWidget(btn_delete)
+
         btn_link = QPushButton("Связать награду")
         btn_link.clicked.connect(self._on_link_award)
         toolbar.addWidget(btn_link)
@@ -321,6 +326,28 @@ class LaureateCardsPage(QWidget):
                 self.refresh_data()
             except APIError as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось создать лауреата:\n{e.detail}")
+
+    def _on_delete(self):
+        lid = self._selected_laureate_id()
+        if lid is None:
+            QMessageBox.information(self, "Удаление", "Выберите лауреата в таблице.")
+            return
+        row = self.table.currentRow()
+        name = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить лауреата «{name}» (ID {lid})?\nЭто действие необратимо.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_laureate(lid)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить:\n{e.detail}")
+            return
+        self.refresh_data()
 
     def _on_link_award(self):
         row = self.table.currentRow()

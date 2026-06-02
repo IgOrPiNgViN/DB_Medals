@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QDateEdit, QDialogButtonBox,
     QComboBox, QTextEdit, QGroupBox, QMessageBox, QCheckBox, QScrollArea, QFileDialog,
 )
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, pyqtSignal
 from PyQt5.QtGui import QFont
 
 import html as html_module
@@ -103,6 +103,8 @@ class DistributionDialog(QDialog):
 class BulletinPage(QWidget):
     """Bulletin creation and management page."""
 
+    data_changed = pyqtSignal()
+
     SECTIONS = ["Учреждение наград и НК", "Награждение лауреатов"]
 
     def __init__(self, api_client, parent=None):
@@ -126,6 +128,12 @@ class BulletinPage(QWidget):
         self.btn_create = QPushButton("Создать бюллетень")
         self.btn_create.clicked.connect(self._on_create)
         top_row.addWidget(self.btn_create)
+
+        self.btn_delete = QPushButton("Удалить бюллетень")
+        self.btn_delete.setProperty("class", "btn-danger")
+        self.btn_delete.clicked.connect(self._on_delete)
+        top_row.addWidget(self.btn_delete)
+
         top_row.addStretch()
         root.addLayout(top_row)
 
@@ -184,6 +192,25 @@ class BulletinPage(QWidget):
         l_layout.addRow(self.btn_save_laureate_q)
         sg_layout.addWidget(self.laureate_widget)
         self.laureate_widget.setVisible(False)
+
+        self.questions_group = QGroupBox("Вопросы бюллетеня")
+        qg_layout = QVBoxLayout(self.questions_group)
+        self.questions_table = QTableWidget()
+        self.questions_table.setColumnCount(3)
+        self.questions_table.setHorizontalHeaderLabels(["ID", "Раздел", "Текст вопроса"])
+        self.questions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.questions_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.questions_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.questions_table.setMaximumHeight(140)
+        qg_layout.addWidget(self.questions_table)
+        q_btn_row = QHBoxLayout()
+        self.btn_delete_question = QPushButton("Удалить вопрос")
+        self.btn_delete_question.setProperty("class", "btn-danger")
+        self.btn_delete_question.clicked.connect(self._on_delete_question)
+        q_btn_row.addWidget(self.btn_delete_question)
+        q_btn_row.addStretch()
+        qg_layout.addLayout(q_btn_row)
+        sg_layout.addWidget(self.questions_group)
 
         btn_row = QHBoxLayout()
         self.btn_generate = QPushButton("Сформировать бюллетень")
@@ -252,6 +279,9 @@ class BulletinPage(QWidget):
             self.table.setItem(i, 3, QTableWidgetItem(str(ve or "")))
         self.table.setSortingEnabled(True)
 
+    def refresh_data(self):
+        self.load_data()
+
     # ── slots ────────────────────────────────────────────────────────────
 
     def _on_create(self):
@@ -269,11 +299,43 @@ class BulletinPage(QWidget):
             return
         self.load_data()
 
+    def _on_delete(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Удаление", "Выберите бюллетень в таблице.")
+            return
+        row = rows[0].row()
+        it = self.table.item(row, 0)
+        bid = it.data(Qt.UserRole) if it else None
+        if bid is None:
+            return
+        number_item = self.table.item(row, 1)
+        number = number_item.text() if number_item else "?"
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить бюллетень №{number}?\n"
+            "Будут удалены вопросы, рассылка, голоса, протокол и связанные выписки.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_bulletin(int(bid))
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить бюллетень:\n{e.detail}")
+            return
+        self._current_bulletin_id = None
+        self.section_group.setVisible(False)
+        self.load_data()
+        self.data_changed.emit()
+
     def _on_bulletin_selected(self):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
             self.section_group.setVisible(False)
             self._current_bulletin_id = None
+            self.questions_table.setRowCount(0)
             return
         row = rows[0].row()
         it = self.table.item(row, 0)
@@ -282,6 +344,7 @@ class BulletinPage(QWidget):
             self._current_bulletin_id = int(bid)
             self.section_group.setVisible(True)
             self._on_section_changed(self.section_combo.currentIndex())
+            self._load_questions()
 
     def _on_section_changed(self, idx: int):
         is_section1 = idx == 0
@@ -371,8 +434,55 @@ class BulletinPage(QWidget):
             )
             QMessageBox.information(self, "Успех", "Вопрос сохранён.")
             self.question_edit.clear()
+            self._load_questions()
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
+
+    def _load_questions(self):
+        self.questions_table.setRowCount(0)
+        if self._current_bulletin_id is None:
+            return
+        try:
+            full = self.api.get_bulletin_full(self._current_bulletin_id)
+        except APIError:
+            return
+        row = 0
+        for sec in full.get("sections") or []:
+            sec_name = sec.get("section_name", "—")
+            for q in sec.get("questions") or []:
+                self.questions_table.insertRow(row)
+                qid = int(q["id"])
+                id_item = QTableWidgetItem(str(qid))
+                id_item.setData(Qt.UserRole, qid)
+                self.questions_table.setItem(row, 0, id_item)
+                self.questions_table.setItem(row, 1, QTableWidgetItem(sec_name))
+                text = (q.get("question_text") or "")[:200]
+                self.questions_table.setItem(row, 2, QTableWidgetItem(text))
+                row += 1
+
+    def _on_delete_question(self):
+        rows = self.questions_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Удаление", "Выберите вопрос в таблице.")
+            return
+        it = self.questions_table.item(rows[0].row(), 0)
+        qid = it.data(Qt.UserRole) if it else None
+        if qid is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить вопрос ID {qid}?\nСвязанные голоса тоже будут удалены.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_section_question(int(qid))
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить вопрос:\n{e.detail}")
+            return
+        self._load_questions()
 
     def _on_save_laureate_question(self):
         if self._current_bulletin_id is None:
@@ -436,6 +546,7 @@ class BulletinPage(QWidget):
                 },
             )
             QMessageBox.information(self, "Успех", "Вопрос по кандидату добавлен в раздел «Награждение лауреатов».")
+            self._load_questions()
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить вопрос:\n{e}")
 

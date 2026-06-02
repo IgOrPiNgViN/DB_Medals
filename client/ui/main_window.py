@@ -245,7 +245,9 @@ class MainWindow(QMainWindow):
             return page
 
         if page_key == "bulletins":
-            return BulletinPage(self.api)
+            page = BulletinPage(self.api)
+            page.data_changed.connect(self._on_voting_data_changed)
+            return page
 
         if page_key == "monitoring":
             return MonitoringPage(self.api)
@@ -254,7 +256,9 @@ class MainWindow(QMainWindow):
             return VoteCountingPage(self.api)
 
         if page_key == "protocols":
-            return ProtocolPage(self.api)
+            page = ProtocolPage(self.api)
+            page.data_changed.connect(lambda: self._refresh_pages("extracts"))
+            return page
 
         if page_key == "extracts":
             return ExtractPage(self.api)
@@ -374,6 +378,30 @@ class MainWindow(QMainWindow):
             return self._laureate_lc.confirm_quit_application()
         return True
 
+    def _refresh_page_widget(self, widget: QWidget | None) -> None:
+        if widget is None:
+            return
+        if hasattr(widget, "refresh_data"):
+            widget.refresh_data()
+        elif hasattr(widget, "load_data"):
+            widget.load_data()
+
+    def _refresh_pages(self, *page_keys: str) -> None:
+        for key in page_keys:
+            idx = self._pages.get(key)
+            if idx is not None:
+                self._refresh_page_widget(self.stack.widget(idx))
+
+    def _on_voting_data_changed(self) -> None:
+        """После удаления бюллетеня — обновить связанные разделы голосования."""
+        self._refresh_pages(
+            "monitoring",
+            "vote_results",
+            "protocols",
+            "extracts",
+            "ppz_submissions",
+        )
+
     def _select_page(self, page_key: str):
         # Guard: do not lose unsaved changes when navigating via sidebar.
         if not self._maybe_confirm_unsaved_on_leave():
@@ -385,6 +413,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(idx)
         for btn in self._page_buttons:
             btn.setChecked(btn.page_key == page_key)
+        self._refresh_page_widget(self.stack.widget(idx))
 
     # ── placeholder pages ------------------------------------------------
 

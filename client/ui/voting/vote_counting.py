@@ -138,6 +138,9 @@ class VoteCountingPage(QWidget):
 
     # ── data loading ─────────────────────────────────────────────────────
 
+    def refresh_data(self):
+        self._load_bulletins()
+
     def _load_bulletins(self):
         self.bulletin_combo.blockSignals(True)
         self.bulletin_combo.clear()

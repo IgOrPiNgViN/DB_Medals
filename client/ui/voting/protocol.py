@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QMessageBox, QDialog, QDialogButtonBox, QTextEdit,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 
 from api_client import APIError
@@ -59,6 +59,8 @@ class ProtocolDetailDialog(QDialog):
 class ProtocolPage(QWidget):
     """Protocols management page."""
 
+    data_changed = pyqtSignal()
+
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
         self.api = api_client
@@ -90,6 +92,11 @@ class ProtocolPage(QWidget):
         self.btn_toggle_signed.clicked.connect(self._on_toggle_signed)
         bottom.addWidget(self.btn_toggle_signed)
 
+        self.btn_delete = QPushButton("Удалить протокол")
+        self.btn_delete.setProperty("class", "btn-danger")
+        self.btn_delete.clicked.connect(self._on_delete)
+        bottom.addWidget(self.btn_delete)
+
         self.btn_print = QPushButton("Печать")
         self.btn_print.clicked.connect(self._on_print)
         bottom.addWidget(self.btn_print)
@@ -99,10 +106,17 @@ class ProtocolPage(QWidget):
         self.btn_pdf.clicked.connect(self._on_pdf)
         bottom.addWidget(self.btn_pdf)
 
+        self.btn_refresh = QPushButton("Обновить")
+        self.btn_refresh.clicked.connect(self.refresh_data)
+        bottom.addWidget(self.btn_refresh)
+
         bottom.addStretch()
         root.addLayout(bottom)
 
     # ── data ─────────────────────────────────────────────────────────────
+
+    def refresh_data(self):
+        self.load_data()
 
     def load_data(self):
         try:
@@ -184,6 +198,43 @@ class ProtocolPage(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось обновить протокол:\n{e}")
             return
         self.load_data()
+
+    def _on_delete(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Удаление", "Выберите протокол в таблице.")
+            return
+        row = rows[0].row()
+        it = self.table.item(row, 0)
+        pid = it.data(Qt.UserRole) if it else None
+        if pid is None:
+            return
+        protocol = next((p for p in self._protocols if p.get("id") == int(pid)), None)
+        num = protocol.get("number", "?") if protocol else "?"
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить протокол №{num}?\n"
+            "Связанные выписки тоже будут удалены. Бюллетень останется.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_protocol(int(pid))
+        except APIError as e:
+            if e.status_code == 404:
+                self.load_data()
+                QMessageBox.information(
+                    self,
+                    "Удаление",
+                    "Протокол уже удалён (например, вместе с бюллетенем). Список обновлён.",
+                )
+                return
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить протокол:\n{e.detail}")
+            return
+        self.load_data()
+        self.data_changed.emit()
 
     def _on_print(self):
         print_table(self.table, "Протоколы", self)

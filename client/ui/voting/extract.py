@@ -4,7 +4,8 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QLineEdit, QGroupBox, QFormLayout, QMessageBox,
-    QFileDialog,
+    QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractItemView,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -24,6 +25,11 @@ class ExtractPage(QWidget):
         self._extracts: list[dict] = []
         self._build_ui()
         self._load_protocols()
+        self._load_extracts_table()
+
+    def refresh_data(self):
+        self._load_protocols()
+        self._load_extracts_table()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -76,6 +82,30 @@ class ExtractPage(QWidget):
 
         export_row.addStretch()
         root.addLayout(export_row)
+
+        list_group = QGroupBox("Сформированные выписки")
+        lg = QVBoxLayout(list_group)
+        self.extracts_table = QTableWidget()
+        self.extracts_table.setColumnCount(4)
+        self.extracts_table.setHorizontalHeaderLabels(
+            ["ID", "Протокол", "Связка лауреат–награда", "Дата"],
+        )
+        self.extracts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.extracts_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.extracts_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.extracts_table.setMaximumHeight(180)
+        lg.addWidget(self.extracts_table)
+        ext_btns = QHBoxLayout()
+        self.btn_delete_extract = QPushButton("Удалить выбранную выписку")
+        self.btn_delete_extract.setProperty("class", "btn-danger")
+        self.btn_delete_extract.clicked.connect(self._on_delete_extract)
+        ext_btns.addWidget(self.btn_delete_extract)
+        self.btn_refresh_extracts = QPushButton("Обновить")
+        self.btn_refresh_extracts.clicked.connect(self.refresh_data)
+        ext_btns.addWidget(self.btn_refresh_extracts)
+        ext_btns.addStretch()
+        lg.addLayout(ext_btns)
+        root.addWidget(list_group)
 
         root.addStretch(1)
 
@@ -157,8 +187,65 @@ class ExtractPage(QWidget):
             )
             self._extracts.append(created)
             QMessageBox.information(self, "Успех", "Выписка сформирована. Можно скачать DOCX.")
+            self._load_extracts_table()
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать выписку:\n{e}")
+
+    def _load_extracts_table(self):
+        try:
+            self._extracts = self.api.list_protocol_extracts()
+        except APIError:
+            self._extracts = []
+        self.extracts_table.setRowCount(0)
+        for i, ex in enumerate(self._extracts):
+            self.extracts_table.insertRow(i)
+            eid = int(ex["id"])
+            id_item = QTableWidgetItem(str(eid))
+            id_item.setData(Qt.UserRole, eid)
+            self.extracts_table.setItem(i, 0, id_item)
+            self.extracts_table.setItem(
+                i, 1, QTableWidgetItem(str(ex.get("protocol_id", "—"))),
+            )
+            self.extracts_table.setItem(
+                i, 2, QTableWidgetItem(str(ex.get("laureate_award_id", "—"))),
+            )
+            self.extracts_table.setItem(
+                i, 3, QTableWidgetItem(str(ex.get("extract_date", "—"))),
+            )
+
+    def _on_delete_extract(self):
+        rows = self.extracts_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Удаление", "Выберите выписку в таблице.")
+            return
+        it = self.extracts_table.item(rows[0].row(), 0)
+        eid = it.data(Qt.UserRole) if it else None
+        if eid is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить выписку ID {eid}?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.api.delete_protocol_extract(int(eid))
+        except APIError as e:
+            if e.status_code == 404:
+                self._load_extracts_table()
+                self._load_protocols()
+                QMessageBox.information(
+                    self,
+                    "Удаление",
+                    "Выписка уже удалена (например, вместе с бюллетенем/протоколом). "
+                    "Список обновлён.",
+                )
+                return
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить выписку:\n{e.detail}")
+            return
+        self._load_extracts_table()
 
     def _build_extract_html(self) -> str:
         proto_idx = self.protocol_combo.currentIndex()

@@ -376,6 +376,9 @@ class APIClient:
     def add_section_question(self, section_id: int, data: dict) -> dict:
         return self._post(f"/voting/sections/{section_id}/questions", json=data)
 
+    def delete_section_question(self, question_id: int) -> None:
+        self._delete(f"/voting/questions/{question_id}")
+
     # -- Distribution ----------------------------------------------------
 
     def distribute_bulletin(self, bulletin_id: int, member_ids: list[int]) -> list:
@@ -422,6 +425,9 @@ class APIClient:
     def update_protocol(self, protocol_id: int, data: dict) -> dict:
         return self._put(f"/voting/protocols/{protocol_id}", json=data)
 
+    def delete_protocol(self, protocol_id: int) -> None:
+        self._delete(f"/voting/protocols/{protocol_id}")
+
     # -- Protocol Extracts -----------------------------------------------
 
     def create_protocol_extract(self, protocol_id: int, data: dict) -> dict:
@@ -433,6 +439,9 @@ class APIClient:
     def download_extract_docx(self, extract_id: int) -> bytes:
         return self._get_bytes(f"/voting/extracts/{extract_id}/docx")
 
+    def delete_protocol_extract(self, extract_id: int) -> None:
+        self._delete(f"/voting/extracts/{extract_id}")
+
     # -- PPZ Submissions -------------------------------------------------
 
     def create_ppz_submission(self, data: dict) -> dict:
@@ -443,6 +452,9 @@ class APIClient:
 
     def download_ppz_submission_docx(self, ppz_id: int) -> bytes:
         return self._get_bytes(f"/voting/ppz-submissions/{ppz_id}/docx")
+
+    def delete_ppz_submission(self, ppz_id: int) -> None:
+        self._delete(f"/voting/ppz-submissions/{ppz_id}")
 
     # ====================================================================
     #  REPORTS  /reports

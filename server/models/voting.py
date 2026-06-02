@@ -41,7 +41,9 @@ class Bulletin(Base):
     distributions = relationship(
         "BulletinDistribution", back_populates="bulletin", cascade="all, delete-orphan",
     )
-    protocol = relationship("Protocol", back_populates="bulletin", uselist=False)
+    protocol = relationship(
+        "Protocol", back_populates="bulletin", uselist=False, cascade="all, delete-orphan",
+    )
 
 
 class BulletinSection(Base):
