@@ -13,7 +13,7 @@
   $env:OUT_DIR = "migration\\csv_export"
   python migration\\dump_access_to_csv.py
 
-Без ACCDB_PATH — берётся файл _архив из папки проекта (может снова дать ошибки на связанных таблицах).
+Без ACCDB_PATH — берётся файл _архив из data/legacy/access/ (может снова дать ошибки на связанных таблицах).
 """
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ except ImportError:
     sys.exit(1)
 
 PROJECT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = PROJECT / "База данных по наградам - 05-06-2024_архив.accdb"
+LEGACY_ACCESS_DIR = PROJECT / "data" / "legacy" / "access"
+DEFAULT_DB = LEGACY_ACCESS_DIR / "База данных по наградам - 05-06-2024_архив.accdb"
 
 
 def get_connection(db_path: str):

@@ -1,5 +1,5 @@
 """
-Загрузка фотографий из папки Фото/ в PostgreSQL.
+Загрузка фотографий из папки data/photos/ в PostgreSQL.
 Маппинг составлен вручную по именам файлов и ID наград в БД.
 
 Запуск:
@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "server"
-PHOTO_DIR = ROOT / "Фото"
+PHOTO_DIR = ROOT / "data" / "photos"
 
 sys.path.insert(0, str(SERVER))
 import os

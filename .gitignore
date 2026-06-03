@@ -41,10 +41,12 @@ htmlcov/
 *.sqlite3
 *.db
 
-# Access (часто большие файлы рядом с проектом)
+# Access (базы в data/legacy/access/, не коммитить)
 *.accdb
 *.mdb
 *.laccdb
+data/legacy/access/*
+!data/legacy/access/.gitkeep
 
 # Локальные настройки ассистентов
 .claude/settings.local.json

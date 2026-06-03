@@ -11,7 +11,7 @@
   python migration/import_access_images.py
 
 Переменные окружения:
-  ACCDB_PATH   — путь к файлу .accdb (по умолчанию бэкенд-файл из корня проекта)
+  ACCDB_PATH   — путь к файлу .accdb (по умолчанию data/legacy/access/)
   DATABASE_URL — строка подключения PostgreSQL (как у сервера)
   DRY_RUN=1    — только показать, что будет сделано, без записи в БД
 """
@@ -78,8 +78,11 @@ def _accdb_path() -> Path:
             return p
         print(f"[WARN] ACCDB_PATH не найден: {p}")
 
-    # Ищем бэкенд-файл в корне проекта (файл без «архив» в имени)
-    candidates = sorted(ROOT.glob("*.accdb"))
+    # Ищем бэкенд-файл в data/legacy/access/ (файл без «архив» в имени)
+    legacy_dir = ROOT / "data" / "legacy" / "access"
+    candidates = sorted(legacy_dir.glob("*.accdb")) if legacy_dir.is_dir() else []
+    if not candidates:
+        candidates = sorted(ROOT.glob("*.accdb"))
     for c in candidates:
         if "архив" not in c.name.lower():
             return c

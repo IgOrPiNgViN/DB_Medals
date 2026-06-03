@@ -6,6 +6,9 @@ import sys
 
 DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "legacy",
+    "access",
     "База данных по наградам - 05-06-2024.accdb",
 )
 

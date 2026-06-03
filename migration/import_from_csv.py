@@ -5,7 +5,7 @@
 
 Картинки наград: файлы с именами из колонок «Изображение» / «Экскиз медали/ППЗ»
 ищутся в папке с .accdb (ACCDB_PATH), в AWARD_IMAGES_DIRS (через «;»),
-в корне проекта и в папке award_images/.
+в data/photos/, migration/extracted_images/ и в папке award_images/ (если есть).
 
 Запуск из корня репозитория:
     python migration/import_from_csv.py
@@ -421,8 +421,10 @@ def _image_search_dirs() -> list[Path]:
             pass
     for rel in (
         ROOT,
+        ROOT / "data" / "photos",
         ROOT / "award_images",
         ROOT / "images",
+        ROOT / "migration" / "extracted_images",
         ROOT / "client" / "resources" / "award_images",
     ):
         try:

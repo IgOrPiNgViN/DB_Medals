@@ -6,9 +6,9 @@ import json
 import pyodbc
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Default: archive file
+# Default: archive file in data/legacy/access/
 DB_NAME = os.environ.get("ACCDB_NAME", "База данных по наградам - 05-06-2024_архив.accdb")
-DB_PATH = os.path.join(PROJECT, DB_NAME)
+DB_PATH = os.path.join(PROJECT, "data", "legacy", "access", DB_NAME)
 
 
 def main():

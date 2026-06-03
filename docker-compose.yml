@@ -37,8 +37,8 @@ services:
       CONSENT_TEMPLATE_PATH: /app/templates/consent.docx
     volumes:
       - api_backups:/app/server/backups
-      # Реальный шаблон согласия (вместо пустого из Dockerfile) — раскомментируйте при наличии файла в корне:
-      # - "./Согласие на обработку пер данных Награждения.docx:/app/templates/consent.docx:ro"
+      # Реальный шаблон согласия (вместо пустого из Dockerfile):
+      # - "./data/templates/Согласие на обработку пер данных Награждения.docx:/app/templates/consent.docx:ro"
     depends_on:
       db:
         condition: service_healthy
