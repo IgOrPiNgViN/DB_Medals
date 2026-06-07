@@ -1,30 +1,28 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QPushButton, QLabel, QMessageBox,
-    QAbstractItemView,
+    QAbstractItemView, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QColor
 
 from api_client import APIError
-from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 from ui.fetch_worker import run_api_fetch, thread_api_call
 from ui.table_fill import fill_table_batched, enable_table_sort_on_click
 from ui.laureates_cache import LaureatesCache
 
-CATEGORY_DISPLAY = {
-    "employee": "Сотрудники",
-    "veteran": "Ветераны",
-    "university": "Университеты",
-    "nii": "НИИ",
-    "nonprofit": "Некомм. орг.",
-    "commercial": "Комм. орг.",
-}
+TZ_COLUMNS = [
+    ("full_name", "ФИО"),
+    ("position", "Должность"),
+    ("organization", "Организация"),
+    ("protocol_number", "№ протокола"),
+    ("protocol_date", "Дата проток."),
+    ("handed_over", "Вруч."),
+]
 
 
 class AwardsLaureatesPage(QWidget):
-    open_lifecycle = pyqtSignal(int)  # laureate_award_id
+    open_lifecycle = pyqtSignal(int)
 
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
@@ -43,10 +41,10 @@ class AwardsLaureatesPage(QWidget):
         layout.addWidget(title)
 
         toolbar = QHBoxLayout()
-
-        toolbar.addWidget(QLabel("Тип награды:"))
+        toolbar.addWidget(QLabel("Награда:"))
         self.award_filter = QComboBox()
-        self.award_filter.addItem("Все", "")
+        self.award_filter.setMinimumWidth(320)
+        self.award_filter.addItem("— выберите награду —", None)
         self.award_filter.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.award_filter)
 
@@ -65,20 +63,21 @@ class AwardsLaureatesPage(QWidget):
         btn_pdf.clicked.connect(self._on_pdf)
         toolbar.addWidget(btn_pdf)
 
+        btn_excel = QPushButton("Выгрузка в Excel…")
+        btn_excel.clicked.connect(self._on_excel)
+        toolbar.addWidget(btn_excel)
+
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels([
-            "ID связки", "Награда", "Тип награды", "Лауреат", "Категория", "Дата назначения",
-        ])
+        self.table.setColumnCount(len(TZ_COLUMNS))
+        self.table.setHorizontalHeaderLabels([label for _, label in TZ_COLUMNS])
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        for col in range(3, len(TZ_COLUMNS)):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -100,17 +99,15 @@ class AwardsLaureatesPage(QWidget):
         return True
 
     def _rebuild_award_filter(self) -> None:
-        award_types = set()
-        for award_group in self._report_data:
-            at = award_group.get("award_type")
-            if at:
-                award_types.add(at)
-        self.award_filter.blockSignals(True)
         current = self.award_filter.currentData()
+        self.award_filter.blockSignals(True)
         self.award_filter.clear()
-        self.award_filter.addItem("Все", "")
-        for at in sorted(award_types):
-            self.award_filter.addItem(at, at)
+        self.award_filter.addItem("— выберите награду —", None)
+        for group in self._report_data:
+            aid = group.get("award_id")
+            name = group.get("award_name", f"#{aid}")
+            if aid is not None:
+                self.award_filter.addItem(name, int(aid))
         idx = self.award_filter.findData(current)
         self.award_filter.setCurrentIndex(max(idx, 0))
         self.award_filter.blockSignals(False)
@@ -150,31 +147,50 @@ class AwardsLaureatesPage(QWidget):
         self._report_data = []
         self._apply_filter()
 
-    def _apply_filter(self):
-        type_filter = self.award_filter.currentData()
-        flat = LaureatesCache.awards_laureates_flat
-        if flat is None:
-            flat = LaureatesCache.flatten_awards_laureates(self._report_data)
-        rows = flat if not type_filter else [
-            r for r in flat if r.get("award_type") == type_filter
-        ]
+    def _rows_for_filter(self) -> list[dict]:
+        award_id = self.award_filter.currentData()
+        if award_id is None:
+            return []
+        for group in self._report_data:
+            if group.get("award_id") == award_id:
+                rows = []
+                for lau in group.get("laureates") or []:
+                    rows.append({
+                        "laureate_award_id": lau.get("laureate_award_id"),
+                        "full_name": lau.get("full_name", ""),
+                        "position": lau.get("position") or "",
+                        "organization": lau.get("organization") or "",
+                        "protocol_number": lau.get("protocol_number") or "",
+                        "protocol_date": str(lau.get("protocol_date") or ""),
+                        "handed_over": "Да" if lau.get("handed_over") else "Нет",
+                    })
+                return rows
+        return []
 
+    def _apply_filter(self):
+        rows = self._rows_for_filter()
         self._fill_gen += 1
         fill_gen = self._fill_gen
 
         def fill_row(table, row, r):
-            table.setItem(row, 0, NumericSortTableItem(str(r["la_id"]), r["la_id"]))
-            table.setItem(row, 1, self._make_item(r["award_name"]))
-            table.setItem(row, 2, self._make_item(r["award_type"]))
-            table.setItem(row, 3, self._make_item(r["full_name"]))
-            cat = r["category"]
-            table.setItem(row, 4, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
-            table.setItem(row, 5, self._make_item(str(r["assigned_date"] or "")))
+            for col, (field, _) in enumerate(TZ_COLUMNS):
+                text = str(r.get(field, ""))
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if col == 0:
+                    la_id = r.get("laureate_award_id")
+                    if la_id is not None:
+                        item.setData(Qt.UserRole, int(la_id))
+                table.setItem(row, col, item)
 
         def done():
             if fill_gen != self._fill_gen:
                 return
-            self.status_label.setText(f"Строк: {len(rows)}")
+            award_name = self.award_filter.currentText()
+            if self.award_filter.currentData() is None:
+                self.status_label.setText("Выберите награду в списке")
+            else:
+                self.status_label.setText(f"{award_name}: строк {len(rows)}")
 
         fill_table_batched(
             self.table,
@@ -185,20 +201,34 @@ class AwardsLaureatesPage(QWidget):
             is_cancelled=lambda: fill_gen != self._fill_gen,
         )
 
-    @staticmethod
-    def _make_item(text: str) -> QTableWidgetItem:
-        item = QTableWidgetItem(text)
-        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        return item
-
     def _on_double_click(self, index):
-        row = index.row()
-        la_item = self.table.item(row, 0)
-        if la_item and la_item.text():
-            self.open_lifecycle.emit(int(la_item.text()))
+        it = self.table.item(index.row(), 0)
+        if it is None:
+            return
+        la_id = it.data(Qt.UserRole)
+        if la_id is not None:
+            self.open_lifecycle.emit(int(la_id))
 
     def _on_print(self):
         print_table(self.table, "Отчёт: Награды — лауреаты", self)
 
     def _on_pdf(self):
         pdf_table(self.table, "Отчёт: Награды — лауреаты", self, "awards_laureates.pdf")
+
+    def _on_excel(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить Excel", "награды_лауреаты.xlsx",
+            "Excel (*.xlsx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        award_id = self.award_filter.currentData()
+        try:
+            data = self.api.download_awards_laureates_xlsx(
+                award_id=int(award_id) if award_id is not None else None,
+            )
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Excel", "Файл сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", str(e.detail))

@@ -1,5 +1,6 @@
 from typing import Optional, Any
 from datetime import date
+import os
 
 import httpx
 
@@ -151,6 +152,17 @@ class APIClient:
     def update_establishment(self, award_id: int, data: dict) -> dict:
         return self._put(f"/awards/{award_id}/establishment", json=data)
 
+    def upload_establishment_protocol(self, award_id: int, file_path: str) -> None:
+        with open(file_path, "rb") as f:
+            self._request(
+                "POST",
+                f"/awards/{award_id}/establishment/protocol-file",
+                files={"file": (os.path.basename(file_path), f, "application/octet-stream")},
+            )
+
+    def download_establishment_protocol(self, award_id: int) -> bytes:
+        return self._get_bytes(f"/awards/{award_id}/establishment/protocol-file")
+
     # -- Development -----------------------------------------------------
 
     def get_development(self, award_id: int) -> dict:
@@ -170,6 +182,12 @@ class APIClient:
     def create_approval(self, award_id: int, data: dict) -> dict:
         return self._post(f"/awards/{award_id}/approvals", json=data)
 
+    def update_approval(self, approval_id: int, data: dict) -> dict:
+        return self._put(f"/awards/approvals/{approval_id}", json=data)
+
+    def delete_approval(self, approval_id: int) -> None:
+        self._delete(f"/awards/approvals/{approval_id}")
+
     # -- Productions -----------------------------------------------------
 
     def get_productions(self, award_id: int) -> list:
@@ -184,6 +202,34 @@ class APIClient:
     def delete_production(self, production_id: int) -> None:
         self._delete(f"/awards/productions/{production_id}")
 
+    def get_production_stages(self, award_id: int) -> dict:
+        return self._get(f"/awards/{award_id}/production-stages")
+
+    def update_production_stages(self, award_id: int, data: dict) -> dict:
+        return self._put(f"/awards/{award_id}/production-stages", json=data)
+
+    def list_production_stage_attachments(
+        self, award_id: int, component_type: str, stage_key: str,
+    ) -> list:
+        return self._get(
+            f"/awards/{award_id}/production-stages/{component_type}/{stage_key}/attachments",
+        )
+
+    def upload_production_stage_attachment(
+        self, award_id: int, component_type: str, stage_key: str, file_path: str,
+    ) -> dict:
+        with open(file_path, "rb") as f:
+            return self._post(
+                f"/awards/{award_id}/production-stages/{component_type}/{stage_key}/attachments",
+                files={"file": (file_path.split("/")[-1].split("\\")[-1], f)},
+            )
+
+    def download_production_stage_attachment(self, attachment_id: int) -> bytes:
+        return self._get_bytes(f"/awards/production-stage-attachments/{attachment_id}")
+
+    def delete_production_stage_attachment(self, attachment_id: int) -> None:
+        self._delete(f"/awards/production-stage-attachments/{attachment_id}")
+
     # -- Inventory -------------------------------------------------------
 
     def get_inventory(self, award_id: int) -> list:
@@ -194,6 +240,45 @@ class APIClient:
 
     def update_inventory_item(self, item_id: int, data: dict) -> dict:
         return self._put(f"/awards/inventory/{item_id}", json=data)
+
+    def get_kit_status(self, award_id: int) -> dict:
+        return self._get(f"/awards/{award_id}/inventory/kit-status")
+
+    def assemble_kits(self, award_id: int, quantity: int = 1, kit_type: str | None = None) -> dict:
+        body: dict = {"quantity": quantity}
+        if kit_type:
+            body["kit_type"] = kit_type
+        return self._post(f"/awards/{award_id}/inventory/assemble", json=body)
+
+    def disassemble_kits(self, award_id: int, quantity: int = 1, kit_type: str | None = None) -> dict:
+        body: dict = {"quantity": quantity}
+        if kit_type:
+            body["kit_type"] = kit_type
+        return self._post(f"/awards/{award_id}/inventory/disassemble", json=body)
+
+    def list_decoration_disposals(self, award_id: int) -> list:
+        return self._get(f"/awards/{award_id}/decoration-disposals")
+
+    def create_decoration_disposal(self, award_id: int, data: dict) -> dict:
+        return self._post(f"/awards/{award_id}/decoration-disposals", json=data)
+
+    def list_kit_disposals(self, award_id: int) -> list:
+        return self._get(f"/awards/{award_id}/kit-disposals")
+
+    def create_kit_disposal(self, award_id: int, data: dict) -> dict:
+        return self._post(f"/awards/{award_id}/kit-disposals", json=data)
+
+    def get_universal_stock(self) -> dict:
+        return self._get("/awards/universal-stock")
+
+    def update_universal_stock(self, data: dict) -> dict:
+        return self._put("/awards/universal-stock", json=data)
+
+    def transfer_to_kit(self, award_id: int, component: str, quantity: int = 1) -> dict:
+        return self._post(
+            f"/awards/{award_id}/inventory/to-kit",
+            json={"component": component, "quantity": quantity},
+        )
 
     # -- Award-level reports (on the awards router) ----------------------
 
@@ -218,6 +303,20 @@ class APIClient:
 
     def get_laureate(self, laureate_id: int) -> dict:
         return self._get(f"/laureates/{laureate_id}")
+
+    def get_laureate_awards_monitor(self, laureate_id: int) -> list:
+        return self._get(f"/laureates/{laureate_id}/awards-monitor")
+
+    def upload_laureate_photo(self, laureate_id: int, file_path: str) -> None:
+        with open(file_path, "rb") as f:
+            self._request(
+                "POST",
+                f"/laureates/{laureate_id}/photo",
+                files={"file": (os.path.basename(file_path), f, "application/octet-stream")},
+            )
+
+    def download_laureate_photo(self, laureate_id: int) -> bytes:
+        return self._get_bytes(f"/laureates/{laureate_id}/photo")
 
     def update_laureate(self, laureate_id: int, data: dict) -> dict:
         return self._put(f"/laureates/{laureate_id}", json=data)
@@ -246,6 +345,10 @@ class APIClient:
             "/laureates/laureate-awards/by-bulletin",
             params={"bulletin_number": bn},
         )
+
+    def get_laureate_awards_for_voting(self) -> list:
+        """Связки на этапе «На голосование» (незав. ЖЦ)."""
+        return self._get("/laureates/laureate-awards/for-voting")
 
     # -- Lifecycle -------------------------------------------------------
 
@@ -284,6 +387,9 @@ class APIClient:
 
     def generate_consent_doc(self, laureate_award_id: int) -> bytes:
         return self._get_bytes(f"/laureates/{laureate_award_id}/consent/generate")
+
+    def download_certificate_docx(self, laureate_award_id: int) -> bytes:
+        return self._get_bytes(f"/laureates/{laureate_award_id}/certificate/docx")
 
     # -- Laureate reports (on the laureates router) ----------------------
 
@@ -327,6 +433,20 @@ class APIClient:
     def delete_committee_member(self, member_id: int) -> None:
         self._delete(f"/committee/{member_id}")
 
+    def upload_committee_member_photo(self, member_id: int, file_path: str) -> None:
+        with open(file_path, "rb") as f:
+            self._request(
+                "POST",
+                f"/committee/{member_id}/photo",
+                files={"file": (file_path.split("/")[-1].split("\\")[-1], f)},
+            )
+
+    def download_committee_member_photo(self, member_id: int) -> bytes:
+        return self._get_bytes(f"/committee/{member_id}/photo")
+
+    def delete_committee_member_photo(self, member_id: int) -> None:
+        self._delete(f"/committee/{member_id}/photo")
+
     # -- Signing rights --------------------------------------------------
 
     def get_signing_rights(self, member_id: int) -> list:
@@ -337,6 +457,12 @@ class APIClient:
 
     def remove_signing_right(self, right_id: int) -> None:
         self._delete(f"/committee/signing-rights/{right_id}")
+
+    def get_signers_for_award(self, award_id: int, role: str = "signer") -> list:
+        return self._get(
+            f"/committee/signers/by-award/{award_id}",
+            params={"role": role},
+        )
 
     # ====================================================================
     #  VOTING  /voting
@@ -395,11 +521,17 @@ class APIClient:
     def get_bulletin_monitoring(self, bulletin_id: int) -> list:
         return self._get(f"/voting/bulletins/{bulletin_id}/monitoring")
 
+    def get_bulletin_monitoring_summary(self, bulletin_id: int) -> dict:
+        return self._get(f"/voting/bulletins/{bulletin_id}/monitoring-summary")
+
     def export_bulletin_distributions_csv(self, bulletin_id: int) -> bytes:
         return self._get_bytes(f"/voting/bulletins/{bulletin_id}/distributions.csv")
 
     def export_bulletin_distributions_xlsx(self, bulletin_id: int) -> bytes:
         return self._get_bytes(f"/voting/bulletins/{bulletin_id}/distributions.xlsx")
+
+    def list_bulletin_distributions(self, bulletin_id: int) -> list:
+        return self._get(f"/voting/bulletins/{bulletin_id}/distributions")
 
     # -- Votes -----------------------------------------------------------
 
@@ -416,8 +548,14 @@ class APIClient:
     def get_protocols(self) -> list:
         return self._get("/voting/protocols")
 
-    def download_protocol_docx(self, protocol_id: int) -> bytes:
-        return self._get_bytes(f"/voting/protocols/{protocol_id}/docx")
+    def download_protocol_docx(self, protocol_id: int, variant: str = "full") -> bytes:
+        return self._get_bytes(
+            f"/voting/protocols/{protocol_id}/docx",
+            params={"variant": variant},
+        )
+
+    def download_bulletin_monitoring_docx(self, bulletin_id: int) -> bytes:
+        return self._get_bytes(f"/voting/bulletins/{bulletin_id}/monitoring.docx")
 
     def create_protocol(self, bulletin_id: int, data: dict) -> dict:
         return self._post(f"/voting/bulletins/{bulletin_id}/protocol", json=data)
@@ -466,22 +604,68 @@ class APIClient:
     def report_warehouse_summary(self) -> list:
         return self._get("/reports/warehouse-summary")
 
-    def report_awards_laureates(self) -> list:
-        return self._get("/reports/awards-laureates")
+    def report_warehouse_summary_grouped(self, award_type: str | None = None) -> list:
+        params = {"award_type": award_type} if award_type else None
+        return self._get("/reports/warehouse-summary-grouped", params=params)
+
+    def report_warehouse_reservations(self) -> dict:
+        return self._get("/reports/warehouse-reservations")
+
+    def report_kit_disposals_journal(self) -> dict:
+        return self._get("/reports/kit-disposals-journal")
+
+    def report_approvals_monitor(
+        self,
+        approval_type: str | None = None,
+        status: str | None = None,
+    ) -> list:
+        params: dict = {}
+        if approval_type:
+            params["approval_type"] = approval_type
+        if status:
+            params["status"] = status
+        return self._get("/reports/approvals-monitor", params=params or None)
+
+    def report_awards_by_bulletin(self) -> dict:
+        return self._get("/reports/awards-by-bulletin")
+
+    def report_awards_laureates(self, award_id: int | None = None) -> list:
+        params = {"award_id": award_id} if award_id else None
+        return self._get("/reports/awards-laureates", params=params)
 
     def report_incomplete_lifecycle(self) -> list:
         return self._get("/reports/incomplete-lifecycle")
+
+    def report_incomplete_lifecycle_sections(self) -> dict:
+        return self._get("/reports/incomplete-lifecycle-sections")
+
+    def download_incomplete_lifecycle_sections_xlsx(self) -> bytes:
+        return self._get_bytes("/reports/incomplete-lifecycle-sections.xlsx")
+
+    def download_warehouse_summary_xlsx(self) -> bytes:
+        return self._get_bytes("/reports/warehouse-summary.xlsx")
+
+    def download_warehouse_grouped_xlsx(self, award_type: str | None = None) -> bytes:
+        params = {"award_type": award_type} if award_type else None
+        return self._get_bytes("/reports/warehouse-summary-grouped.xlsx", params=params)
+
+    def download_awards_laureates_xlsx(self, award_id: int | None = None) -> bytes:
+        params = {"award_id": award_id} if award_id else None
+        return self._get_bytes("/reports/awards-laureates.xlsx", params=params)
 
     def report_statistics(
         self,
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
+        award_id: int | None = None,
     ) -> dict:
         params: dict = {}
         if from_date:
             params["from_date"] = from_date.isoformat()
         if to_date:
             params["to_date"] = to_date.isoformat()
+        if award_id is not None:
+            params["award_id"] = award_id
         return self._get("/reports/statistics", params=params)
 
     def report_lifecycle_by_stage(self) -> dict:

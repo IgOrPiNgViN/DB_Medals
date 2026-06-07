@@ -12,9 +12,12 @@ from typing import List, Optional
 from datetime import date, timedelta
 
 from database import get_db
-from config import CONSENT_TEMPLATE_PATH
+from config import CONSENT_TEMPLATE_PATH, CERTIFICATE_TEMPLATE_PATH
 from models.laureate import Laureate, LaureateAward, LaureateLifecycle, LaureateConsentFile
 from models.award import Award
+from models.voting import ProtocolExtract
+from services import award_kits, inventory_lc
+from services.docx_templates import render_template
 from schemas.laureate import (
     LaureateCreate, LaureateUpdate, LaureateRead,
     LaureateAwardCreate, LaureateAwardRead,
@@ -38,6 +41,12 @@ def _get_laureate_award_or_404(db: Session, la_id: int) -> LaureateAward:
     return obj
 
 
+def _laureate_to_read(obj: Laureate) -> dict:
+    data = LaureateRead.model_validate(obj).model_dump()
+    data["has_photo"] = bool(obj.photo)
+    return data
+
+
 # ── Laureate CRUD ───────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[LaureateRead])
@@ -45,7 +54,46 @@ def list_laureates(category: Optional[str] = None, db: Session = Depends(get_db)
     q = db.query(Laureate)
     if category:
         q = q.filter(Laureate.category == category)
-    return q.all()
+    return [_laureate_to_read(x) for x in q.all()]
+
+
+@router.get("/laureate-awards/for-voting")
+def list_laureate_awards_for_voting(db: Session = Depends(get_db)):
+    """
+    Связки «лауреат–награда» на этапе голосования (ТЗ: категория «На голосование»).
+    Выдвижение выполнено, голосование ещё не закрыто.
+    """
+    rows = (
+        db.query(LaureateAward)
+        .join(LaureateLifecycle, LaureateLifecycle.laureate_award_id == LaureateAward.id)
+        .options(
+            joinedload(LaureateAward.laureate),
+            joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle),
+        )
+        .filter(
+            LaureateLifecycle.nomination_done.is_(True),
+            LaureateLifecycle.voting_done.is_(False),
+        )
+        .order_by(LaureateAward.id)
+        .all()
+    )
+    return [
+        {
+            "laureate_award_id": la.id,
+            "laureate_id": la.laureate_id,
+            "full_name": la.laureate.full_name if la.laureate else "",
+            "award_name": la.award.name if la.award else "",
+            "award_id": la.award_id,
+            "initiator": la.initiator or (
+                la.lifecycle.nomination_initiator if la.lifecycle else None
+            ),
+            "bulletin_number": (
+                la.lifecycle.voting_bulletin_number if la.lifecycle else None
+            ),
+        }
+        for la in rows
+    ]
 
 
 @router.get("/laureate-awards/by-bulletin")
@@ -94,12 +142,20 @@ def get_laureate_award_context(laureate_award_id: int, db: Session = Depends(get
         .options(
             joinedload(LaureateAward.laureate),
             joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle),
         )
         .filter(LaureateAward.id == laureate_award_id)
         .first()
     )
     if not la:
         raise HTTPException(status_code=404, detail="LaureateAward not found")
+    lc = la.lifecycle
+    extracts = (
+        db.query(ProtocolExtract)
+        .filter(ProtocolExtract.laureate_award_id == la.id)
+        .order_by(ProtocolExtract.id)
+        .all()
+    )
     return {
         "laureate_award_id": la.id,
         "laureate_id": la.laureate_id,
@@ -110,6 +166,16 @@ def get_laureate_award_context(laureate_award_id: int, db: Session = Depends(get
         "assigned_date": la.assigned_date,
         "status": la.status,
         "initiator": la.initiator,
+        "bulletin_number": lc.voting_bulletin_number if lc else None,
+        "extracts": [
+            {
+                "id": e.id,
+                "protocol_id": e.protocol_id,
+                "extract_date": e.extract_date,
+                "details": e.details,
+            }
+            for e in extracts
+        ],
     }
 
 
@@ -119,7 +185,7 @@ def create_laureate(payload: LaureateCreate, db: Session = Depends(get_db)):
     db.add(obj)
     db.commit()
     db.refresh(obj)
-    return obj
+    return _laureate_to_read(obj)
 
 
 @router.get("/reports/awards-laureates")
@@ -205,15 +271,15 @@ def statistics_report(
     to_date: Optional[date] = None,
     db: Session = Depends(get_db),
 ):
-    """Статистика по категориям с фильтром по дате."""
+    """Статистика по категориям с фильтром по дате награждения."""
     q = db.query(
         Laureate.category,
-        func.count(Laureate.id).label("count"),
-    )
+        func.count(func.distinct(Laureate.id)).label("count"),
+    ).join(LaureateAward, LaureateAward.laureate_id == Laureate.id)
     if from_date:
-        q = q.filter(func.date(Laureate.created_at) >= from_date)
+        q = q.filter(LaureateAward.assigned_date >= from_date)
     if to_date:
-        q = q.filter(func.date(Laureate.created_at) <= to_date)
+        q = q.filter(LaureateAward.assigned_date <= to_date)
     rows = q.group_by(Laureate.category).all()
     return [
         {"category": r.category.value if r.category else None, "count": r.count}
@@ -221,9 +287,64 @@ def statistics_report(
     ]
 
 
+@router.get("/{laureate_id}/awards-monitor")
+def laureate_awards_monitor(laureate_id: int, db: Session = Depends(get_db)):
+    """Мониторинг наград лауреата (этапы ЖЦ) для карточки по ТЗ."""
+    _get_laureate_or_404(db, laureate_id)
+    rows = (
+        db.query(LaureateAward)
+        .options(
+            joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle),
+        )
+        .filter(LaureateAward.laureate_id == laureate_id)
+        .all()
+    )
+    result = []
+    for la in rows:
+        lc = la.lifecycle
+        result.append({
+            "laureate_award_id": la.id,
+            "award_name": la.award.name if la.award else "",
+            "nomination_done": bool(lc and lc.nomination_done),
+            "voting_done": bool(lc and lc.voting_done),
+            "decision_done": bool(lc and lc.decision_done),
+            "registration_done": bool(lc and lc.registration_done),
+            "ceremony_done": bool(lc and lc.ceremony_done),
+            "publication_done": bool(lc and lc.publication_done),
+        })
+    return result
+
+
+@router.post("/{laureate_id}/photo", status_code=status.HTTP_204_NO_CONTENT)
+async def upload_laureate_photo(
+    laureate_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    obj = _get_laureate_or_404(db, laureate_id)
+    obj.photo = await file.read()
+    db.commit()
+
+
+@router.get("/{laureate_id}/photo")
+def download_laureate_photo(laureate_id: int, db: Session = Depends(get_db)):
+    obj = _get_laureate_or_404(db, laureate_id)
+    if not obj.photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return Response(content=obj.photo, media_type="image/jpeg")
+
+
+@router.delete("/{laureate_id}/photo", status_code=status.HTTP_204_NO_CONTENT)
+def delete_laureate_photo(laureate_id: int, db: Session = Depends(get_db)):
+    obj = _get_laureate_or_404(db, laureate_id)
+    obj.photo = None
+    db.commit()
+
+
 @router.get("/{laureate_id}", response_model=LaureateRead)
 def get_laureate(laureate_id: int, db: Session = Depends(get_db)):
-    return _get_laureate_or_404(db, laureate_id)
+    return _laureate_to_read(_get_laureate_or_404(db, laureate_id))
 
 
 @router.put("/{laureate_id}", response_model=LaureateRead)
@@ -235,7 +356,7 @@ def update_laureate(
         setattr(obj, key, value)
     db.commit()
     db.refresh(obj)
-    return obj
+    return _laureate_to_read(obj)
 
 
 @router.delete("/{laureate_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -256,9 +377,31 @@ def link_award(
     laureate_id: int, payload: LaureateAwardCreate, db: Session = Depends(get_db),
 ):
     _get_laureate_or_404(db, laureate_id)
-    obj = LaureateAward(**payload.model_dump())
+    data = payload.model_dump()
+    bulletin_number = (data.pop("bulletin_number", None) or "").strip() or None
+    award = db.query(Award).filter(Award.id == data["award_id"]).first()
+    if not award:
+        raise HTTPException(status_code=404, detail="Award not found")
+    award_kits.ensure_inventory_kit(db, award.id, award.award_type)
+
+    obj = LaureateAward(**data)
     obj.laureate_id = laureate_id
     db.add(obj)
+    db.flush()
+
+    lc = LaureateLifecycle(
+        laureate_award_id=obj.id,
+        voting_bulletin_number=bulletin_number,
+    )
+    db.add(lc)
+    db.flush()
+    obj.lifecycle = lc
+    try:
+        inventory_lc.auto_reserve_on_link(db, lc)
+    except HTTPException:
+        db.rollback()
+        raise
+
     db.commit()
     db.refresh(obj)
     return obj
@@ -289,7 +432,11 @@ def create_lifecycle(
         LaureateLifecycle.laureate_award_id == laureate_award_id,
     ).first()
     if existing:
-        raise HTTPException(status_code=409, detail="Lifecycle already exists")
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
     obj = LaureateLifecycle(**payload.model_dump())
     obj.laureate_award_id = laureate_award_id
     db.add(obj)
@@ -314,13 +461,40 @@ def update_lifecycle(
     payload: LaureateLifecycleUpdate,
     db: Session = Depends(get_db),
 ):
-    obj = db.query(LaureateLifecycle).filter(
-        LaureateLifecycle.laureate_award_id == laureate_award_id,
-    ).first()
+    obj = (
+        db.query(LaureateLifecycle)
+        .options(joinedload(LaureateLifecycle.laureate_award))
+        .filter(LaureateLifecycle.laureate_award_id == laureate_award_id)
+        .first()
+    )
     if not obj:
         raise HTTPException(status_code=404, detail="Lifecycle not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    old_reserved = bool(obj.inventory_reserved)
+    old_issued = bool(obj.inventory_issued)
+    old_decision = bool(obj.decision_done)
+
+    for key, value in updates.items():
         setattr(obj, key, value)
+
+    new_reserved = bool(obj.inventory_reserved)
+    new_issued = bool(obj.inventory_issued)
+    inventory_lc.apply_inventory_flags(
+        db,
+        obj,
+        old_reserved=old_reserved,
+        old_issued=old_issued,
+        new_reserved=new_reserved,
+        new_issued=new_issued,
+    )
+    if obj.decision_done and not old_decision:
+        inventory_lc.auto_reserve_on_decision(db, obj)
+
+    from services import kit_assembly
+    la = obj.laureate_award
+    if la is not None and la.award_id is not None:
+        kit_assembly.sync_postponed_sets(db, la.award_id)
+
     db.commit()
     db.refresh(obj)
     return obj
@@ -420,6 +594,53 @@ def _fill_doc_placeholders(doc: Document, full_name: str) -> None:
         for row in table.rows:
             for cell in row.cells:
                 replace_in_paragraphs(cell.paragraphs)
+
+
+@router.get("/{laureate_award_id}/certificate/docx")
+def generate_certificate_docx(laureate_award_id: int, db: Session = Depends(get_db)):
+    """Удостоверение к награде (DOCX) по данным этапа «Оформление»."""
+    la = (
+        db.query(LaureateAward)
+        .options(
+            joinedload(LaureateAward.laureate),
+            joinedload(LaureateAward.award),
+            joinedload(LaureateAward.lifecycle).joinedload(LaureateLifecycle.registration_signer),
+        )
+        .filter(LaureateAward.id == laureate_award_id)
+        .first()
+    )
+    if not la:
+        raise HTTPException(status_code=404, detail="LaureateAward not found")
+    full_name = la.laureate.full_name if la.laureate else ""
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Laureate full_name is empty")
+
+    lc = la.lifecycle
+    cert_no = lc.registration_certificate_number if lc else None
+    proto_no = lc.decision_protocol_number if lc else None
+    reg_date = lc.registration_date if lc else None
+    signer = ""
+    if lc and lc.registration_signer:
+        signer = lc.registration_signer.full_name or ""
+
+    mapping = {
+        "FULL_NAME": full_name,
+        "AWARD_NAME": la.award.name if la.award else "—",
+        "CERT_NUMBER": cert_no or "—",
+        "PROTOCOL_NUMBER": proto_no or "—",
+        "REG_DATE": reg_date.isoformat() if reg_date else "—",
+        "SIGNER": signer or "—",
+    }
+    content = render_template(CERTIFICATE_TEMPLATE_PATH, "Удостоверение", mapping)
+    safe_name = re.sub(r"[\\\\/:*?\"<>|]+", "_", full_name).strip() or "laureate"
+    filename = f"Удостоверение — {safe_name}.docx"
+    encoded = quote(filename, safe="")
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 @router.get("/{laureate_award_id}/consent/generate")

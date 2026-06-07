@@ -8,6 +8,7 @@
 в data/photos/, migration/extracted_images/ и в папке award_images/ (если есть).
 
 Запуск из корня репозитория:
+    python migration/migrate_tz.py      # SQL-миграции (таблицы/колонки)
     python migration/import_from_csv.py
 
 Переменные окружения:
@@ -29,6 +30,7 @@ os.chdir(SERVER)
 
 from sqlalchemy import text  # noqa: E402
 from database import Base, SessionLocal, engine  # noqa: E402
+from db_migrations import ensure_production_stages_schema  # noqa: E402
 
 import models.award  # noqa: F401, E402
 import models.laureate  # noqa: F401, E402
@@ -42,6 +44,9 @@ from models.award import (  # noqa: E402
     AwardType,
     InventoryItem,
     ComponentType,
+    KitDisposal,
+    ProductionStageRow,
+    ProductionComponentReady,
 )
 from models.laureate import (  # noqa: E402
     Laureate,
@@ -134,6 +139,171 @@ def _find_csv(csv_dir: Path, *stems: str) -> Path | None:
         if p.stem.lower() in want:
             return p
     return None
+
+
+def _import_kit_disposals(
+    db,
+    csv_dir: Path,
+    award_by_name: dict[str, int],
+    laureate_by_name: dict[str, int],
+) -> tuple[int, int]:
+    """УЧ_списание_лауреатам.csv и УЧ_списание_иное.csv — журнал выбытия комплектов."""
+    la_by_pair: dict[tuple[int, int], int] = {}
+    for la in db.query(LaureateAward).all():
+        la_by_pair[(la.laureate_id, la.award_id)] = la.id
+
+    n_laureate = 0
+    p_la = _find_csv(csv_dir, "УЧ_списание_лауреатам", "uch_spisanie_laureatam")
+    if p_la:
+        for row in _read_dict_rows(p_la):
+            an = _norm_name(row.get("Наименования награды"))
+            fn = _norm_name(row.get("Лауреат"))
+            aid = award_by_name.get(an)
+            if not aid:
+                continue
+            lid = laureate_by_name.get(fn)
+            la_id = la_by_pair.get((lid, aid)) if lid else None
+            db.add(
+                KitDisposal(
+                    award_id=aid,
+                    laureate_award_id=la_id,
+                    target="laureate",
+                    event_name=(row.get("Мероприятие") or "").strip()[:500] or None,
+                    protocol_number=(row.get("Протокол") or "").strip()[:100] or None,
+                    disposal_date=_parse_date(row.get("Дата")),
+                    note=(row.get("Примечание") or "").strip() or None,
+                    quantity=1,
+                )
+            )
+            n_laureate += 1
+
+    n_other = 0
+    p_other = _find_csv(csv_dir, "УЧ_списание_иное", "uch_spisanie_inoe")
+    if p_other:
+        for row in _read_dict_rows(p_other):
+            an = _norm_name(row.get("Наименования награды"))
+            aid = award_by_name.get(an)
+            if not aid:
+                continue
+            db.add(
+                KitDisposal(
+                    award_id=aid,
+                    target="other",
+                    reason=(row.get("Причина списания") or "").strip()[:500] or None,
+                    disposal_date=_parse_date(row.get("Дата")),
+                    note=(row.get("Примечание") or "").strip() or None,
+                    quantity=1,
+                )
+            )
+            n_other += 1
+
+    return n_laureate, n_other
+
+
+PRODUCTION_CSV_FILES = [
+    ("ПРОИЗВ_медали_медаль.csv", "medal", "Название медали"),
+    ("ПРОИЗВ_медали_значки.csv", "badge", "Название медали"),
+    ("ПРОИЗВ_медали_запонки.csv", "cufflinks", "Название медали"),
+    ("ПРОИЗВ_медали_кулон.csv", "pendant", "Название медали"),
+    ("ПРОИЗВ_ППЗ.csv", "ppz", "Название ППЗ"),
+]
+
+
+def _import_production_stages(db, csv_dir: Path, award_by_name: dict[str, int]) -> tuple[int, int, int]:
+    """Импорт ПРОИЗВ_*.csv → production_stage_rows + production_component_ready."""
+    from services.production_stages import PRODUCTION_STAGES, parse_production_column
+
+    filled = 0
+    skeleton = 0
+    ready_flags = 0
+    for filename, component_type, name_col in PRODUCTION_CSV_FILES:
+        path = csv_dir / filename
+        rows = _read_dict_rows(path)
+        if not rows:
+            continue
+        headers = list(rows[0].keys())
+        col_map: dict[tuple[str, str], str] = {}
+        ready_col = None
+        for h in headers:
+            parsed = parse_production_column(h)
+            if parsed:
+                col_map[parsed] = h
+            elif h.endswith("_чек"):
+                ready_col = h
+        for row in rows:
+            an = _norm_name(row.get(name_col))
+            aid = award_by_name.get(an)
+            if not aid:
+                continue
+            for stage_key, _label in PRODUCTION_STAGES:
+                existing = (
+                    db.query(ProductionStageRow)
+                    .filter(
+                        ProductionStageRow.award_id == aid,
+                        ProductionStageRow.component_type == component_type,
+                        ProductionStageRow.stage_key == stage_key,
+                    )
+                    .first()
+                )
+                if existing is None:
+                    db.add(
+                        ProductionStageRow(
+                            award_id=aid,
+                            component_type=component_type,
+                            stage_key=stage_key,
+                        )
+                    )
+                    skeleton += 1
+            for (stage_key, field), col in col_map.items():
+                val = row.get(col)
+                if val is None or str(val).strip() == "":
+                    continue
+                existing = (
+                    db.query(ProductionStageRow)
+                    .filter(
+                        ProductionStageRow.award_id == aid,
+                        ProductionStageRow.component_type == component_type,
+                        ProductionStageRow.stage_key == stage_key,
+                    )
+                    .first()
+                )
+                if existing is None:
+                    existing = ProductionStageRow(
+                        award_id=aid,
+                        component_type=component_type,
+                        stage_key=stage_key,
+                    )
+                    db.add(existing)
+                    skeleton += 1
+                if field == "status":
+                    existing.status = str(val).strip()[:200]
+                elif field == "stage_date":
+                    existing.stage_date = _parse_date(val)
+                elif field == "attachment_note":
+                    existing.attachment_note = str(val).strip()[:500]
+                filled += 1
+            if ready_col:
+                ready = _parse_bool(row.get(ready_col))
+                rrow = (
+                    db.query(ProductionComponentReady)
+                    .filter(
+                        ProductionComponentReady.award_id == aid,
+                        ProductionComponentReady.component_type == component_type,
+                    )
+                    .first()
+                )
+                if rrow is None:
+                    db.add(
+                        ProductionComponentReady(
+                            award_id=aid,
+                            component_type=component_type,
+                            is_ready=ready,
+                        )
+                    )
+                else:
+                    rrow.is_ready = ready
+                ready_flags += 1
+    return skeleton, filled, ready_flags
 
 
 def _import_voting(db, csv_dir: Path) -> None:
@@ -507,6 +677,8 @@ def main() -> None:
     nk = csv_dir / "Список НК.csv"
     uch = csv_dir / "УЧ_комплекты_наград.csv"
 
+    ensure_production_stages_schema(engine)
+
     with engine.begin() as conn:
         _truncate_all(conn)
 
@@ -554,7 +726,18 @@ def main() -> None:
                     position=pos or None,
                     organization=None,
                     phone=phone[:100] if phone else None,
+                    phone_work=wrk[:100] if wrk and mob else None,
                     email=(row.get("Почта") or "").strip()[:255] or None,
+                    birth_date=_parse_date(row.get("ДР")),
+                    assistant_name=(row.get("ФИО (ПА)") or "").strip()[:500] or None,
+                    assistant_phone=(row.get("Тел (ПА)") or "").strip()[:100] or None,
+                    inclusion_protocol_number=(
+                        (row.get("Протокол включения - №") or "").strip()[:50] or None
+                    ),
+                    inclusion_protocol_date=_parse_date(row.get("Протокол включения - дата")),
+                    consent_letter=(row.get("Письмо о согласии") or "").strip()[:500] or None,
+                    photo_filename=(row.get("Фото") or "").strip()[:500] or None,
+                    is_non_voting=_parse_bool(row.get("Неголосующий")),
                     is_active=True,
                 )
             )
@@ -569,6 +752,11 @@ def main() -> None:
                     category=_infer_laureate_category(row),
                     position=(row.get("Должность") or "").strip()[:500] or None,
                     organization=(row.get("Организация") or "").strip()[:500] or None,
+                    birth_date=_parse_date(row.get("ДР")),
+                    passport=(row.get("Паспорт") or "").strip()[:100] or None,
+                    inn=(row.get("ИНН") or "").strip()[:20] or None,
+                    snils=(row.get("СНИЛС") or "").strip()[:20] or None,
+                    regalia=(row.get("Регалии") or "").strip() or None,
                 )
             )
         db.flush()
@@ -576,6 +764,10 @@ def main() -> None:
         laureate_by_name: dict[str, int] = {}
         for x in db.query(Laureate).all():
             laureate_by_name[_norm_name(x.full_name)] = x.id
+
+        signer_by_name: dict[str, int] = {}
+        for x in db.query(CommitteeMember).all():
+            signer_by_name[_norm_name(x.full_name)] = x.id
 
         lc_rows = _read_dict_rows(lc)
         csv_by_pair: dict[tuple[int, int], dict] = {}
@@ -593,13 +785,11 @@ def main() -> None:
                 csv_by_pair[key] = row
 
         for (lid, aid), row in csv_by_pair.items():
-            bulletin = (row.get("Бюллетень") or "").strip() or None
             db.add(
                 LaureateAward(
                     laureate_id=lid,
                     award_id=aid,
                     assigned_date=_parse_date(row.get("ВЫДВИЖ_дата")),
-                    bulletin_number=bulletin[:50] if bulletin else None,
                     initiator=(row.get("ВЫДВИЖ_лицо") or "").strip()[:500] or None,
                     status="imported",
                 )
@@ -610,15 +800,7 @@ def main() -> None:
             lrow = csv_by_pair.get((la.laureate_id, la.award_id))
             if not lrow:
                 continue
-            place_parts = [
-                x
-                for x in (
-                    (lrow.get("ВРУЧЕН_кто") or "").strip(),
-                    (lrow.get("ВРУЧЕН_где") or "").strip(),
-                )
-                if x
-            ]
-            ceremony_place = ", ".join(place_parts)[:500] if place_parts else None
+            signer_name = _norm_name(lrow.get("ОФОРМ_подписант вкладыша") or "")
             db.add(
                 LaureateLifecycle(
                     laureate_award_id=la.id,
@@ -627,22 +809,51 @@ def main() -> None:
                     nomination_done=_parse_bool(lrow.get("ВЫДВИЖ_чек")),
                     voting_date=_parse_date(lrow.get("СОГЛАС_секретариарт_дата")),
                     voting_bulletin_number=(lrow.get("Бюллетень") or "").strip()[:50] or None,
+                    voting_secretariat_done=_parse_bool(lrow.get("СОГЛАС_секретариарт_чек")),
+                    voting_secretariat_date=_parse_date(lrow.get("СОГЛАС_секретариарт_дата")),
                     voting_done=_parse_bool(lrow.get("СОГЛАС_чек")),
                     decision_date=_parse_date(lrow.get("ПРИСУЖ_дата")),
                     decision_protocol_number=(
                         (lrow.get("ПРИСУЖ_№ протокола") or "").strip()[:50] or None
                     ),
+                    decision_authorized_ppz=(
+                        (lrow.get("ПРИСУЖ_уполномоченные для ППЗ") or "").strip()[:500] or None
+                    ),
                     decision_done=_parse_bool(lrow.get("ПРИСУЖ_чек")),
                     registration_date=_parse_date(lrow.get("ОФОРМ_дата")),
-                    registration_certificate_number=(
+                    registration_signer_id=signer_by_name.get(signer_name),
+                    registration_extract_number=(
                         (lrow.get("ОФОРМ_выписка_№") or "").strip()[:100] or None
+                    ),
+                    registration_protocol_number=(
+                        (lrow.get("ОФОРМ_протокол_№") or "").strip()[:100] or None
+                    ),
+                    registration_pending_issue=_parse_bool(lrow.get("ОФОРМ_ но не вруч_чек")),
+                    registration_pending_comment=(
+                        (lrow.get("ОФОРМ_ но не вруч_комм") or "").strip() or None
                     ),
                     registration_done=_parse_bool(lrow.get("ОФОРМ_чек")),
                     ceremony_date=_parse_date(lrow.get("ВРУЧЕН_дата")),
-                    ceremony_place=ceremony_place,
+                    ceremony_place=(lrow.get("ВРУЧЕН_где") or "").strip()[:500] or None,
+                    ceremony_officiant=(lrow.get("ВРУЧЕН_кто") or "").strip()[:500] or None,
+                    ceremony_kit_type=(
+                        (lrow.get("ВРУЧЕН_тип комплекта") or "").strip()[:200] or None
+                    ),
                     ceremony_done=_parse_bool(lrow.get("ВРУЧЕН_чек")),
                     publication_date=_parse_date(lrow.get("ОПУБЛ_НК_дата")),
+                    publication_nk_link=(
+                        (lrow.get("ОПУБЛ_НК_ссылка") or "").strip()[:500] or None
+                    ),
+                    publication_smi_web_count=_parse_int(lrow.get("ОПУБЛ_сайты_СМИ_шт")),
+                    publication_smi_print_count=_parse_int(lrow.get("ОПУБЛ_бумажные_СМИ_шт")),
                     publication_done=_parse_bool(lrow.get("ОПУБЛ_чек")),
+                    consent_sent_date=_parse_date(lrow.get("ВЫДВИЖ_дата"))
+                    if _parse_bool(lrow.get("ВЫДВИЖ_чек"))
+                    else None,
+                    consent_received_date=_parse_date(lrow.get("ОФОРМ_дата"))
+                    if _parse_bool(lrow.get("ОФОРМ_чек"))
+                    else None,
+                    consent_received=_parse_bool(lrow.get("ОФОРМ_чек")),
                 )
             )
 
@@ -686,6 +897,14 @@ def main() -> None:
 
         n_mirror = _mirror_all_csv(db, csv_dir)
 
+        n_kit_la, n_kit_other = _import_kit_disposals(
+            db, csv_dir, award_by_name, laureate_by_name,
+        )
+
+        n_prod_sk, n_prod_filled, n_prod_ready = _import_production_stages(
+            db, csv_dir, award_by_name,
+        )
+
         # Опционально: голосование (если таблицы присутствуют в CSV)
         _import_voting(db, csv_dir)
 
@@ -696,7 +915,11 @@ def main() -> None:
             f"лауреаты: {len(laureate_by_name)}, "
             f"связей лауреат–награда: {len(csv_by_pair)}, "
             f"пропусков ЖЦ (нет ФИО/награды в справочнике): {skipped_lc}\n"
-            f"  зеркало всех таблиц Access (CSV): {n_mirror} строк в access_mirror_rows"
+            f"  зеркало всех таблиц Access (CSV): {n_mirror} строк в access_mirror_rows\n"
+            f"  выбытие комплектов: лауреатам {n_kit_la}, иное {n_kit_other}\n"
+            f"  этапы производства: {n_prod_sk} записей этапов, "
+            f"{n_prod_filled} заполненных полей, {n_prod_ready} флагов «готов» "
+            f"(в CSV почти все ячейки пустые)"
         )
     except Exception:
         db.rollback()

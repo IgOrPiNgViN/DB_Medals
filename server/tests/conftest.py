@@ -10,12 +10,14 @@ from fastapi.testclient import TestClient
 
 from database import engine, get_db, Base
 from main import app
+from migrate_tz import apply_migrations
 
 
 @pytest.fixture(scope="session", autouse=True)
 def create_tables():
     """Ensure all tables exist once per test session."""
     Base.metadata.create_all(engine)
+    apply_migrations()
     yield
 
 

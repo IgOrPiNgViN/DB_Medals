@@ -26,6 +26,13 @@ def enable_table_sort_on_click(table: QTableWidget) -> None:
     header.sectionClicked.connect(_on_click)
 
 
+def configure_table_rows(table: QTableWidget, row_height: int = 36) -> None:
+    """Единая высота строк — текст и виджеты в ячейках не обрезаются."""
+    vh = table.verticalHeader()
+    vh.setDefaultSectionSize(row_height)
+    vh.setMinimumSectionSize(row_height)
+
+
 def fill_table_batched(
     table: QTableWidget,
     rows: list,

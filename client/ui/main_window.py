@@ -26,9 +26,11 @@ from ui.laureates.awards_laureates import AwardsLaureatesPage
 from ui.laureates.incomplete_lc import IncompleteLCPage
 from ui.laureates.statistics import StatisticsPage
 from ui.laureates.lc_stages_report import LifecycleStagesReportPage
+from ui.laureates.awards_bulletins import AwardsBulletinsPage
 
 from ui.committee.committee_list import CommitteeListPage
 from ui.committee.member_card import MemberCardPage
+from ui.committee.approvals_monitor import ApprovalsMonitorPage
 
 from ui.voting.bulletin import BulletinPage
 from ui.voting.monitoring import MonitoringPage
@@ -55,12 +57,14 @@ NAV_ITEMS = [
     ("ЛАУРЕАТЫ", None),
     ("Карточки лауреатов", "laureate_cards"),
     ("Награды-лауреаты", "awards_laureates"),
+    ("Награды-бюллетени", "awards_bulletins"),
     ("Незавершённый ЖЦ", "incomplete_lifecycle"),
     ("Отчёт: этапы ЖЦ", "lifecycle_stages_report"),
     ("Статистика", "statistics"),
 
     ("НАГРАДНОЙ КОМИТЕТ", None),
     ("Список НК", "committee_list"),
+    ("Мониторинг согласований", "approvals_monitor"),
 
     ("ГОЛОСОВАНИЕ", None),
     ("Бюллетени", "bulletins"),
@@ -482,6 +486,7 @@ class MainWindow(QMainWindow):
 
         if page_key == "warehouse":
             page = WarehousePage(self.api)
+            page.open_lifecycle.connect(self._open_laureate_lifecycle)
             self._award_widgets[page_key] = page
             return page
 
@@ -498,9 +503,16 @@ class MainWindow(QMainWindow):
             page.open_lifecycle.connect(self._open_laureate_lifecycle)
             return page
 
+        if page_key == "awards_bulletins":
+            page = AwardsBulletinsPage(self.api)
+            page.open_lifecycle.connect(self._open_laureate_lifecycle)
+            page.open_bulletin.connect(self._open_bulletin_by_number)
+            return page
+
         if page_key == "incomplete_lifecycle":
             page = IncompleteLCPage(self.api)
             page.open_lifecycle.connect(self._open_laureate_lifecycle)
+            page.open_bulletin.connect(self._open_bulletin_by_number)
             return page
 
         if page_key == "lifecycle_stages_report":
@@ -516,13 +528,20 @@ class MainWindow(QMainWindow):
             page.member_selected.connect(self._open_member_card)
             return page
 
+        if page_key == "approvals_monitor":
+            page = ApprovalsMonitorPage(self.api)
+            page.award_selected.connect(self._open_award_detail)
+            return page
+
         if page_key == "bulletins":
             page = BulletinPage(self.api)
             page.data_changed.connect(self._on_voting_data_changed)
             return page
 
         if page_key == "monitoring":
-            return MonitoringPage(self.api)
+            page = MonitoringPage(self.api)
+            page.enter_results_requested.connect(self._open_vote_counting_for_bulletin)
+            return page
 
         if page_key == "vote_results":
             return VoteCountingPage(self.api)
@@ -615,6 +634,28 @@ class MainWindow(QMainWindow):
                 self.stack.setCurrentIndex(self._laureate_detail_idx)
             else:
                 self._select_page(self._lc_return_page)
+
+    def _open_vote_counting_for_bulletin(self, bulletin_id: int):
+        """Переход из мониторинга на «Подсчёт голосов» с выбранным бюллетенем."""
+        self._select_page("vote_results")
+        idx = self._pages.get("vote_results")
+        if idx is None:
+            return
+        page = self.stack.widget(idx)
+        if page is not None and hasattr(page, "select_bulletin"):
+            page.select_bulletin(bulletin_id)
+
+    def _open_bulletin_by_number(self, number: str):
+        """Переход из «Незав. ЖЦ» к бюллетеню по номеру."""
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
+        self._select_page("bulletins")
+        idx = self._pages.get("bulletins")
+        if idx is None:
+            return
+        page = self.stack.widget(idx)
+        if page is not None and hasattr(page, "focus_bulletin_number"):
+            page.focus_bulletin_number(number)
 
     # ── committee member card (hidden page) ──────────────────────────────
 

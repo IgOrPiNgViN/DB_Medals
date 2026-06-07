@@ -108,6 +108,12 @@ class BulletinDistributionRead(BulletinDistributionBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BulletinDistributionMemberRead(BulletinDistributionRead):
+    """Рассылка с данными члена НК (для mailto и контроля)."""
+    member_name: Optional[str] = None
+    member_email: Optional[str] = None
+
+
 # ── Vote ────────────────────────────────────────────────────────────────────
 
 class VoteBase(BaseModel):
@@ -220,3 +226,12 @@ class MonitoringEntry(BaseModel):
     sent_date: Optional[date] = None
     received: bool
     received_date: Optional[date] = None
+
+
+class MonitoringSummary(BaseModel):
+    active_members: int
+    required_received: int
+    received_count: int
+    distributed_count: int
+    quorum_met: bool
+    entries: List[MonitoringEntry]

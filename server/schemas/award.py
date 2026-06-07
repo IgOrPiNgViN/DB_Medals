@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 _Date = date  # алиас — поле named `date` с типом `date` конфликтует на Python 3.14 (PEP 649)
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, ConfigDict
 
@@ -78,6 +78,8 @@ class AwardEstablishmentBase(BaseModel):
     document_date: Optional[date] = None
     initiator: Optional[str] = None
     details: Optional[str] = None
+    has_protocol_data: Optional[bool] = False
+    protocol_filename: Optional[str] = None
 
 
 class AwardEstablishmentCreate(AwardEstablishmentBase):
@@ -86,6 +88,7 @@ class AwardEstablishmentCreate(AwardEstablishmentBase):
 
 class AwardEstablishmentRead(AwardEstablishmentBase):
     id: int
+    has_protocol_file: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -141,6 +144,14 @@ class AwardApprovalRead(AwardApprovalBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AwardApprovalUpdate(BaseModel):
+    approval_type: Optional[ApprovalType] = None
+    approver_name: Optional[str] = None
+    status: Optional[str] = None
+    date: Optional[_Date] = None
+    details: Optional[str] = None
+
+
 # ── AwardProduction ──────────────────────────────────────────────────────────
 
 class AwardProductionBase(BaseModel):
@@ -174,6 +185,40 @@ class AwardProductionUpdate(BaseModel):
     delivery_date: Optional[date] = None
     status: Optional[str] = None
     details: Optional[str] = None
+
+
+# ── Production stages (ТЗ file-008) ─────────────────────────────────────────
+
+class ProductionStageItem(BaseModel):
+    stage_key: str
+    label: Optional[str] = None
+    status: Optional[str] = None
+    stage_date: Optional[date] = None
+    attachment_note: Optional[str] = None
+    attachment_count: int = 0
+
+
+class ProductionComponentStages(BaseModel):
+    component_type: str
+    is_ready: bool = False
+    stages: List[ProductionStageItem] = []
+
+
+class ProductionStagesResponse(BaseModel):
+    components: List[ProductionComponentStages] = []
+
+
+class ProductionStageUpdateItem(BaseModel):
+    stage_key: str
+    status: Optional[str] = None
+    stage_date: Optional[date] = None
+    attachment_note: Optional[str] = None
+
+
+class ProductionComponentStagesUpdate(BaseModel):
+    component_type: str
+    is_ready: Optional[bool] = None
+    stages: Optional[List[ProductionStageUpdateItem]] = None
 
 
 # ── InventoryItem ────────────────────────────────────────────────────────────

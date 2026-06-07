@@ -2,13 +2,17 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QLineEdit, QCheckBox, QTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QAbstractItemView,
-    QComboBox, QDialog, QDialogButtonBox, QGroupBox,
+    QComboBox, QDialog, QDialogButtonBox, QGroupBox, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
+from ui.print_helpers import print_table
+from ui.photo_helpers import make_photo_preview_label, set_photo_bytes, set_photo_placeholder, wrap_photo_row
+from ui.table_fill import configure_table_rows
+from ui.form_helpers import make_form_label, configure_form, make_scroll_page
 
 
 class AddAwardDialog(QDialog):
@@ -55,13 +59,22 @@ class MemberCardPage(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(16)
 
         top_bar = QHBoxLayout()
         self.btn_back = QPushButton("← Назад")
         self.btn_back.clicked.connect(self.back_requested.emit)
         top_bar.addWidget(self.btn_back)
+        self.btn_print = QPushButton("Печать карточки")
+        self.btn_print.setProperty("class", "btn-secondary")
+        self.btn_print.clicked.connect(self._on_print)
+        top_bar.addWidget(self.btn_print)
         top_bar.addStretch()
         root.addLayout(top_bar)
 
@@ -71,23 +84,55 @@ class MemberCardPage(QWidget):
 
         form_group = QGroupBox("Персональные данные")
         form = QFormLayout(form_group)
+        configure_form(form)
 
         self.full_name_edit = QLineEdit()
         self.position_edit = QLineEdit()
         self.organization_edit = QLineEdit()
         self.phone_edit = QLineEdit()
+        self.phone_work_edit = QLineEdit()
         self.email_edit = QLineEdit()
+        self.birth_date_edit = QLineEdit()
+        self.birth_date_edit.setPlaceholderText("ГГГГ-ММ-ДД")
+        self.assistant_name_edit = QLineEdit()
+        self.assistant_phone_edit = QLineEdit()
+        self.inclusion_number_edit = QLineEdit()
+        self.inclusion_date_edit = QLineEdit()
+        self.consent_letter_edit = QLineEdit()
+        self.non_voting_check = QCheckBox("Неголосующий")
         self.active_check = QCheckBox("Действующий")
         self.notes_edit = QTextEdit()
-        self.notes_edit.setMaximumHeight(80)
+        self.notes_edit.setMinimumHeight(72)
+        self.notes_edit.setMaximumHeight(120)
 
-        form.addRow("ФИО:", self.full_name_edit)
-        form.addRow("Должность:", self.position_edit)
-        form.addRow("Организация:", self.organization_edit)
-        form.addRow("Телефон:", self.phone_edit)
-        form.addRow("Email:", self.email_edit)
-        form.addRow("Статус:", self.active_check)
-        form.addRow("Примечания:", self.notes_edit)
+        status_row = QWidget()
+        status_layout = QHBoxLayout(status_row)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.addWidget(self.active_check)
+        status_layout.addWidget(self.non_voting_check)
+        status_layout.addStretch()
+
+        self.photo_label = make_photo_preview_label(120, 150)
+        btn_photo = QPushButton("Загрузить фото…")
+        btn_photo.clicked.connect(self._on_upload_photo)
+        photo_widget = wrap_photo_row(self.photo_label, btn_photo)
+
+        fl = make_form_label
+        form.addRow(fl("ФИО:"), self.full_name_edit)
+        form.addRow(fl("Должность:"), self.position_edit)
+        form.addRow(fl("Организация:"), self.organization_edit)
+        form.addRow(fl("Телефон (моб):"), self.phone_edit)
+        form.addRow(fl("Телефон (раб):"), self.phone_work_edit)
+        form.addRow(fl("Email:"), self.email_edit)
+        form.addRow(fl("Дата рождения:"), self.birth_date_edit)
+        form.addRow(fl("ФИО помощника:"), self.assistant_name_edit)
+        form.addRow(fl("Тел. помощника:"), self.assistant_phone_edit)
+        form.addRow(fl("Протокол вкл. №:"), self.inclusion_number_edit)
+        form.addRow(fl("Протокол вкл. дата:"), self.inclusion_date_edit)
+        form.addRow(fl("Письмо о согласии:"), self.consent_letter_edit)
+        form.addRow(fl("Статус:"), status_row)
+        form.addRow(fl("Примечания:"), self.notes_edit)
+        form.addRow(fl("Фотография:"), photo_widget)
         root.addWidget(form_group)
 
         save_row = QHBoxLayout()
@@ -98,7 +143,6 @@ class MemberCardPage(QWidget):
         save_row.addWidget(self.btn_save)
         root.addLayout(save_row)
 
-        # ── signing rights table ────────────────────────────────────────
         signing_group = QGroupBox("Подписант удостоверений следующих наград")
         sg_layout = QVBoxLayout(signing_group)
 
@@ -110,6 +154,9 @@ class MemberCardPage(QWidget):
         self.signing_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.signing_table.setSortingEnabled(True)
         self.signing_table.horizontalHeader().setSortIndicatorShown(True)
+        self.signing_table.verticalHeader().setVisible(False)
+        self.signing_table.setMinimumHeight(100)
+        configure_table_rows(self.signing_table, 36)
         sg_layout.addWidget(self.signing_table)
 
         sg_btns = QHBoxLayout()
@@ -123,7 +170,6 @@ class MemberCardPage(QWidget):
         sg_layout.addLayout(sg_btns)
         root.addWidget(signing_group)
 
-        # ── authorized table ────────────────────────────────────────────
         auth_group = QGroupBox("Уполномоченный по наградам")
         ag_layout = QVBoxLayout(auth_group)
 
@@ -135,6 +181,9 @@ class MemberCardPage(QWidget):
         self.auth_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.auth_table.setSortingEnabled(True)
         self.auth_table.horizontalHeader().setSortIndicatorShown(True)
+        self.auth_table.verticalHeader().setVisible(False)
+        self.auth_table.setMinimumHeight(100)
+        configure_table_rows(self.auth_table, 36)
         ag_layout.addWidget(self.auth_table)
 
         ag_btns = QHBoxLayout()
@@ -147,6 +196,10 @@ class MemberCardPage(QWidget):
         ag_btns.addStretch()
         ag_layout.addLayout(ag_btns)
         root.addWidget(auth_group)
+
+        root.addStretch()
+        content.setMinimumWidth(640)
+        outer.addWidget(make_scroll_page(content))
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -161,12 +214,31 @@ class MemberCardPage(QWidget):
         self.full_name_edit.setText(data.get("full_name", ""))
         self.position_edit.setText(data.get("position", ""))
         self.organization_edit.setText(data.get("organization", ""))
-        self.phone_edit.setText(data.get("phone", ""))
-        self.email_edit.setText(data.get("email", ""))
+        self.phone_edit.setText(data.get("phone") or "")
+        self.phone_work_edit.setText(data.get("phone_work") or "")
+        self.email_edit.setText(data.get("email") or "")
+        self.birth_date_edit.setText(str(data.get("birth_date") or ""))
+        self.assistant_name_edit.setText(data.get("assistant_name") or "")
+        self.assistant_phone_edit.setText(data.get("assistant_phone") or "")
+        self.inclusion_number_edit.setText(data.get("inclusion_protocol_number") or "")
+        self.inclusion_date_edit.setText(str(data.get("inclusion_protocol_date") or ""))
+        self.consent_letter_edit.setText(data.get("consent_letter") or "")
+        self.non_voting_check.setChecked(bool(data.get("is_non_voting")))
         self.active_check.setChecked(data.get("is_active", False))
         self.notes_edit.setPlainText(data.get("notes", ""))
+        self._load_member_photo(bool(data.get("has_photo")))
 
         self._load_signing_rights()
+
+    def _load_member_photo(self, has_photo: bool):
+        if not has_photo or self._member_id is None:
+            set_photo_placeholder(self.photo_label, "нет фото")
+            return
+        try:
+            data = self.api.download_committee_member_photo(self._member_id)
+            set_photo_bytes(self.photo_label, data)
+        except APIError:
+            set_photo_placeholder(self.photo_label, "есть фото")
 
     def _load_signing_rights(self):
         if self._member_id is None:
@@ -198,6 +270,10 @@ class MemberCardPage(QWidget):
                 name_it.setData(Qt.UserRole, int(rid))
             table.setItem(i, 1, name_it)
         table.setSortingEnabled(True)
+        if items:
+            table.setMinimumHeight(min(36 * len(items) + 42, 280))
+        else:
+            table.setMinimumHeight(100)
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -208,8 +284,16 @@ class MemberCardPage(QWidget):
             "full_name": self.full_name_edit.text().strip(),
             "position": self.position_edit.text().strip(),
             "organization": self.organization_edit.text().strip(),
-            "phone": self.phone_edit.text().strip(),
-            "email": self.email_edit.text().strip(),
+            "phone": self.phone_edit.text().strip() or None,
+            "phone_work": self.phone_work_edit.text().strip() or None,
+            "email": self.email_edit.text().strip() or None,
+            "birth_date": self.birth_date_edit.text().strip() or None,
+            "assistant_name": self.assistant_name_edit.text().strip() or None,
+            "assistant_phone": self.assistant_phone_edit.text().strip() or None,
+            "inclusion_protocol_number": self.inclusion_number_edit.text().strip() or None,
+            "inclusion_protocol_date": self.inclusion_date_edit.text().strip() or None,
+            "consent_letter": self.consent_letter_edit.text().strip() or None,
+            "is_non_voting": self.non_voting_check.isChecked(),
             "is_active": self.active_check.isChecked(),
             "notes": self.notes_edit.toPlainText().strip(),
         }
@@ -221,6 +305,20 @@ class MemberCardPage(QWidget):
             QMessageBox.information(self, "Успех", "Данные сохранены.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{e}")
+
+    def _on_upload_photo(self):
+        if self._member_id is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Фото члена НК", "", "Изображения (*.jpg *.jpeg *.png);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            self.api.upload_committee_member_photo(self._member_id, path)
+            self._load_member_photo(True)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", str(e.detail))
 
     def _fetch_awards(self) -> list:
         try:
@@ -286,3 +384,34 @@ class MemberCardPage(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось удалить:\n{e}")
             return
         self._load_signing_rights()
+
+    def _on_print(self):
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Поле", "Значение"])
+        rows = [
+            ("ФИО", self.full_name_edit.text()),
+            ("Должность", self.position_edit.text()),
+            ("Организация", self.organization_edit.text()),
+            ("Телефон (моб)", self.phone_edit.text()),
+            ("Телефон (раб)", self.phone_work_edit.text()),
+            ("Email", self.email_edit.text()),
+            ("Дата рождения", self.birth_date_edit.text()),
+            ("Помощник", self.assistant_name_edit.text()),
+            ("Тел. помощника", self.assistant_phone_edit.text()),
+            ("Протокол вкл. №", self.inclusion_number_edit.text()),
+            ("Протокол вкл. дата", self.inclusion_date_edit.text()),
+            ("Письмо о согласии", self.consent_letter_edit.text()),
+            ("Действующий", "Да" if self.active_check.isChecked() else "Нет"),
+            ("Примечания", self.notes_edit.toPlainText()),
+        ]
+        table.setRowCount(len(rows))
+        for i, (k, v) in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(k))
+            table.setItem(i, 1, QTableWidgetItem(v))
+        name = self.full_name_edit.text().strip() or "член НК"
+        print_table(table, f"Карточка члена НК — {name}", self)
+
+        for label, tbl in (("Подписант", self.signing_table), ("Уполномоченный", self.auth_table)):
+            if tbl.rowCount() > 0:
+                print_table(tbl, f"{name} — {label}", self)

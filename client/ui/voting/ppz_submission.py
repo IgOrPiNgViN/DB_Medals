@@ -116,8 +116,14 @@ class PPZSubmissionPage(QWidget):
             grouped = self.api.report_awards_laureates()
             flat = []
             for award in grouped or []:
+                if (award.get("award_type") or "").lower() != "ppz":
+                    continue
                 for la in award.get("laureates") or []:
-                    flat.append(la)
+                    entry = dict(la)
+                    entry["award_name"] = award.get("award_name")
+                    entry["award_id"] = award.get("award_id")
+                    entry["award_type"] = award.get("award_type")
+                    flat.append(entry)
             self._la_links = flat
         except APIError:
             self._la_links = []
@@ -131,22 +137,30 @@ class PPZSubmissionPage(QWidget):
             display = f"{name} — {award}".strip(" —")
             self.laureate_combo.addItem(display or f"Связка #{la_id}", la_id)
 
+        self._reload_authorized_combo(None)
+
+        if self._la_links:
+            self._on_laureate_changed(0)
+
+    def _reload_authorized_combo(self, award_id: int | None):
         self.auth_combo.clear()
+        if award_id is None:
+            return
         try:
-            members = self.api.get_committee_members(is_active=True)
+            members = self.api.get_signers_for_award(int(award_id), role="authorized")
         except APIError:
             members = []
         for m in members or []:
             self.auth_combo.addItem(m.get("full_name", f"#{m.get('id')}"), m.get("id"))
 
-        if self._la_links:
-            self._on_laureate_changed(0)
-
     def _on_laureate_changed(self, idx: int):
         self.info_display.clear()
         if idx < 0 or idx >= len(self._la_links):
+            self._reload_authorized_combo(None)
             return
         la = self._la_links[idx]
+        award_id = la.get("award_id")
+        self._reload_authorized_combo(award_id)
         name = la.get("full_name") or la.get("laureate_name") or "—"
         award = la.get("award_name") or "—"
         lines = [

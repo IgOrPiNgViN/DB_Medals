@@ -2,9 +2,9 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QMessageBox, QDialog, QCheckBox, QDateEdit, QDialogButtonBox,
-    QFormLayout, QGroupBox, QScrollArea,
+    QFormLayout, QGroupBox, QScrollArea, QFileDialog,
 )
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush
 
 from api_client import APIError
@@ -146,12 +146,16 @@ class DetailedMonitoringDialog(QDialog):
 class MonitoringPage(QWidget):
     """Monitoring page showing response status for all bulletins."""
 
+    enter_results_requested = pyqtSignal(int)  # bulletin_id
+
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
         self.api = api_client
         self._bulletins: list[dict] = []
         self._members: list[dict] = []
         self._monitoring_cache: dict[int, list] = {}
+        self._summary_cache: dict[int, dict] = {}
+        self._quorum_bulletin_id: int | None = None
         self._build_ui()
         self.load_data()
 
@@ -177,6 +181,10 @@ class MonitoringPage(QWidget):
             legend.addSpacing(12)
         legend.addStretch()
         root.addLayout(legend)
+
+        self.quorum_label = QLabel("")
+        self.quorum_label.setWordWrap(True)
+        root.addWidget(self.quorum_label)
 
         self.table = QTableWidget()
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -207,6 +215,11 @@ class MonitoringPage(QWidget):
         self.btn_pdf.clicked.connect(self._on_pdf)
         bottom.addWidget(self.btn_pdf)
 
+        self.btn_docx = QPushButton("Word (DOCX)…")
+        self.btn_docx.setProperty("class", "btn-secondary")
+        self.btn_docx.clicked.connect(self._on_monitoring_docx)
+        bottom.addWidget(self.btn_docx)
+
         bottom.addStretch()
         root.addLayout(bottom)
 
@@ -228,11 +241,18 @@ class MonitoringPage(QWidget):
             self._members = []
 
         self._monitoring_cache.clear()
+        self._summary_cache.clear()
         for b in self._bulletins:
             try:
-                self._monitoring_cache[b["id"]] = self.api.get_bulletin_monitoring(b["id"])
+                summary = self.api.get_bulletin_monitoring_summary(b["id"])
+                self._summary_cache[b["id"]] = summary
+                self._monitoring_cache[b["id"]] = summary.get("entries") or []
             except APIError:
-                self._monitoring_cache[b["id"]] = []
+                try:
+                    self._monitoring_cache[b["id"]] = self.api.get_bulletin_monitoring(b["id"])
+                except APIError:
+                    self._monitoring_cache[b["id"]] = []
+                self._summary_cache[b["id"]] = {}
 
         self._build_matrix()
 
@@ -272,8 +292,22 @@ class MonitoringPage(QWidget):
             name_item = QTableWidgetItem(m.get("full_name", ""))
             self.table.setItem(row, 0, name_item)
 
-        all_received_enough = True
+        self._quorum_bulletin_id = None
+        quorum_parts: list[str] = []
+        any_quorum = False
         for col_idx, b in enumerate(self._bulletins):
+            summary = self._summary_cache.get(b["id"], {})
+            required = summary.get("required_received")
+            received_total = summary.get("received_count")
+            if required is not None and received_total is not None:
+                quorum_parts.append(
+                    f"Б-{b.get('number', '?')}: получено {received_total}, нужно {required}",
+                )
+                if summary.get("quorum_met"):
+                    any_quorum = True
+                    if self._quorum_bulletin_id is None:
+                        self._quorum_bulletin_id = b["id"]
+
             mon = self._monitoring_cache.get(b["id"], [])
             lookup = {entry.get("member_id"): entry for entry in mon}
 
@@ -299,11 +333,13 @@ class MonitoringPage(QWidget):
 
                 self.table.setItem(row, col_idx + 1, item)
 
-            if total_sent > 0 and received_count < total_sent:
-                all_received_enough = False
+        if quorum_parts:
+            self.quorum_label.setText("Кворум 65%: " + "  |  ".join(quorum_parts))
+        else:
+            self.quorum_label.setText("")
 
         self.table.setSortingEnabled(True)
-        self._update_results_button(all_received_enough and n_bulletins > 0)
+        self._update_results_button(any_quorum)
 
     def _update_results_button(self, enabled: bool):
         self.btn_enter_results.setEnabled(enabled)
@@ -327,13 +363,33 @@ class MonitoringPage(QWidget):
         dlg.exec_()
 
     def _on_enter_results(self):
-        QMessageBox.information(
-            self, "Результаты",
-            "Переход к подсчёту голосов.",
-        )
+        if self._quorum_bulletin_id is None:
+            QMessageBox.information(
+                self, "Результаты",
+                "Кворум 65% ещё не достигнут ни по одному бюллетеню.",
+            )
+            return
+        self.enter_results_requested.emit(int(self._quorum_bulletin_id))
 
     def _on_print(self):
         print_table(self.table, "Мониторинг ответов", self)
 
     def _on_pdf(self):
         pdf_table(self.table, "Мониторинг ответов", self, "monitoring.pdf")
+
+    def _on_monitoring_docx(self):
+        if self._quorum_bulletin_id is None:
+            QMessageBox.information(self, "DOCX", "Нет бюллетеня с достигнутым кворумом.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить мониторинг", "monitoring.docx", "Word (*.docx)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.download_bulletin_monitoring_docx(int(self._quorum_bulletin_id))
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Сохранено", f"Файл сохранён:\n{path}")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать DOCX:\n{e.detail}")

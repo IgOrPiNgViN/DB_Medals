@@ -27,7 +27,16 @@ class CreateMemberDialog(QDialog):
         self.position_edit = QLineEdit()
         self.organization_edit = QLineEdit()
         self.phone_edit = QLineEdit()
+        self.phone_work_edit = QLineEdit()
         self.email_edit = QLineEdit()
+        self.birth_date_edit = QLineEdit()
+        self.birth_date_edit.setPlaceholderText("ГГГГ-ММ-ДД")
+        self.assistant_name_edit = QLineEdit()
+        self.assistant_phone_edit = QLineEdit()
+        self.inclusion_number_edit = QLineEdit()
+        self.inclusion_date_edit = QLineEdit()
+        self.consent_letter_edit = QLineEdit()
+        self.non_voting_check = QCheckBox("Неголосующий")
         self.active_check = QCheckBox("Действующий")
         self.active_check.setChecked(True)
         self.notes_edit = QLineEdit()
@@ -35,8 +44,16 @@ class CreateMemberDialog(QDialog):
         layout.addRow("ФИО:", self.full_name_edit)
         layout.addRow("Должность:", self.position_edit)
         layout.addRow("Организация:", self.organization_edit)
-        layout.addRow("Телефон:", self.phone_edit)
+        layout.addRow("Телефон (моб):", self.phone_edit)
+        layout.addRow("Телефон (раб):", self.phone_work_edit)
         layout.addRow("Email:", self.email_edit)
+        layout.addRow("Дата рождения:", self.birth_date_edit)
+        layout.addRow("ФИО помощника:", self.assistant_name_edit)
+        layout.addRow("Тел. помощника:", self.assistant_phone_edit)
+        layout.addRow("Протокол вкл. №:", self.inclusion_number_edit)
+        layout.addRow("Протокол вкл. дата:", self.inclusion_date_edit)
+        layout.addRow("Письмо о согласии:", self.consent_letter_edit)
+        layout.addRow("", self.non_voting_check)
         layout.addRow("Статус:", self.active_check)
         layout.addRow("Примечания:", self.notes_edit)
 
@@ -50,8 +67,16 @@ class CreateMemberDialog(QDialog):
             "full_name": self.full_name_edit.text().strip(),
             "position": self.position_edit.text().strip(),
             "organization": self.organization_edit.text().strip(),
-            "phone": self.phone_edit.text().strip(),
-            "email": self.email_edit.text().strip(),
+            "phone": self.phone_edit.text().strip() or None,
+            "phone_work": self.phone_work_edit.text().strip() or None,
+            "email": self.email_edit.text().strip() or None,
+            "birth_date": self.birth_date_edit.text().strip() or None,
+            "assistant_name": self.assistant_name_edit.text().strip() or None,
+            "assistant_phone": self.assistant_phone_edit.text().strip() or None,
+            "inclusion_protocol_number": self.inclusion_number_edit.text().strip() or None,
+            "inclusion_protocol_date": self.inclusion_date_edit.text().strip() or None,
+            "consent_letter": self.consent_letter_edit.text().strip() or None,
+            "is_non_voting": self.non_voting_check.isChecked(),
             "is_active": self.active_check.isChecked(),
             "notes": self.notes_edit.text().strip(),
         }

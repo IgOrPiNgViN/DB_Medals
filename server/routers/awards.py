@@ -2,19 +2,30 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, File, Uplo
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
+from datetime import date
 
 from database import get_db
+from pydantic import BaseModel
 from models.award import (
     Award, AwardCharacteristic, AwardEstablishment,
     AwardDevelopment, AwardApproval, AwardProduction, InventoryItem, AwardType,
+    DecorationDisposal, KitDisposal, ComponentType,
+)
+from services.award_kits import ensure_inventory_kit
+from services.kit_assembly import assemble_sets, disassemble_sets, kit_status
+from services.kit_disposals import (
+    create_kit_disposal,
+    get_universal_stock,
+    transfer_universal_to_award,
 )
 from schemas.award import (
     AwardCreate, AwardUpdate, AwardRead, AwardDetailRead, AwardListItem,
     AwardCharacteristicCreate, AwardCharacteristicRead,
     AwardEstablishmentCreate, AwardEstablishmentRead,
     AwardDevelopmentCreate, AwardDevelopmentRead,
-    AwardApprovalCreate, AwardApprovalRead,
+    AwardApprovalCreate, AwardApprovalRead, AwardApprovalUpdate,
     AwardProductionCreate, AwardProductionRead, AwardProductionUpdate,
+    ProductionStagesResponse, ProductionComponentStages, ProductionComponentStagesUpdate,
     InventoryItemCreate, InventoryItemRead, InventoryItemUpdate,
 )
 
@@ -173,6 +184,8 @@ def list_awards(award_type: Optional[str] = None, db: Session = Depends(get_db))
 def create_award(payload: AwardCreate, db: Session = Depends(get_db)):
     award = Award(**payload.model_dump())
     db.add(award)
+    db.flush()
+    ensure_inventory_kit(db, award.id, award.award_type)
     db.commit()
     db.refresh(award)
     return _award_to_read(award)
@@ -456,7 +469,9 @@ def get_establishment(award_id: int, db: Session = Depends(get_db)):
     ).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Establishment not found")
-    return obj
+    data = AwardEstablishmentRead.model_validate(obj).model_dump()
+    data["has_protocol_file"] = bool(obj.protocol_data)
+    return data
 
 
 @router.put("/{award_id}/establishment", response_model=AwardEstablishmentRead)
@@ -553,6 +568,30 @@ def list_approvals(award_id: int, db: Session = Depends(get_db)):
     return db.query(AwardApproval).filter(AwardApproval.award_id == award_id).all()
 
 
+@router.put("/approvals/{approval_id}", response_model=AwardApprovalRead)
+def update_approval(
+    approval_id: int, payload: AwardApprovalUpdate, db: Session = Depends(get_db),
+):
+    obj = db.query(AwardApproval).filter(AwardApproval.id == approval_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@router.delete("/approvals/{approval_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_approval(approval_id: int, db: Session = Depends(get_db)):
+    obj = db.query(AwardApproval).filter(AwardApproval.id == approval_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    db.delete(obj)
+    db.commit()
+    return None
+
+
 # ── Productions ─────────────────────────────────────────────────────────────
 
 @router.post(
@@ -576,6 +615,95 @@ def create_production(
 def list_productions(award_id: int, db: Session = Depends(get_db)):
     _get_award_or_404(db, award_id)
     return db.query(AwardProduction).filter(AwardProduction.award_id == award_id).all()
+
+
+PRODUCTION_COMPONENTS_BY_AWARD_TYPE = {
+    "medal": ["medal", "badge", "cufflinks", "pendant"],
+    "ppz": ["ppz"],
+    "distinction": ["badge"],
+    "decoration": ["cufflinks", "pendant"],
+}
+
+
+@router.get("/{award_id}/production-stages", response_model=ProductionStagesResponse)
+def get_production_stages(award_id: int, db: Session = Depends(get_db)):
+    from services.production_stages import list_components_for_award
+
+    award = _get_award_or_404(db, award_id)
+    at = award.award_type.value if award.award_type else "medal"
+    components = PRODUCTION_COMPONENTS_BY_AWARD_TYPE.get(at, ["medal", "badge"])
+    return list_components_for_award(db, award_id, components)
+
+
+@router.put("/{award_id}/production-stages", response_model=ProductionComponentStages)
+def update_production_stages(
+    award_id: int, body: ProductionComponentStagesUpdate, db: Session = Depends(get_db),
+):
+    from services.production_stages import upsert_component
+
+    _get_award_or_404(db, award_id)
+    result = upsert_component(
+        db,
+        award_id,
+        body.component_type,
+        is_ready=body.is_ready,
+        stages=[s.model_dump() for s in body.stages] if body.stages else None,
+    )
+    db.commit()
+    return result
+
+
+@router.get("/{award_id}/production-stages/{component_type}/{stage_key}/attachments")
+def list_production_stage_attachments(
+    award_id: int,
+    component_type: str,
+    stage_key: str,
+    db: Session = Depends(get_db),
+):
+    from services.production_stage_files import list_attachments
+
+    _get_award_or_404(db, award_id)
+    return list_attachments(db, award_id, component_type, stage_key)
+
+
+@router.post(
+    "/{award_id}/production-stages/{component_type}/{stage_key}/attachments",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_production_stage_attachment(
+    award_id: int,
+    component_type: str,
+    stage_key: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    from services.production_stage_files import upload_attachment
+
+    _get_award_or_404(db, award_id)
+    result = await upload_attachment(db, award_id, component_type, stage_key, file)
+    db.commit()
+    return result
+
+
+@router.get("/production-stage-attachments/{attachment_id}")
+def download_production_stage_attachment(attachment_id: int, db: Session = Depends(get_db)):
+    from services.production_stage_files import get_attachment_or_404
+
+    att = get_attachment_or_404(db, attachment_id)
+    media = att.content_type or "application/octet-stream"
+    return Response(
+        content=bytes(att.data),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{att.filename}"'},
+    )
+
+
+@router.delete("/production-stage-attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_production_stage_attachment(attachment_id: int, db: Session = Depends(get_db)):
+    from services.production_stage_files import delete_attachment
+
+    delete_attachment(db, attachment_id)
+    db.commit()
 
 
 # ── Inventory ───────────────────────────────────────────────────────────────
@@ -602,3 +730,238 @@ def create_inventory_item(
 def list_inventory(award_id: int, db: Session = Depends(get_db)):
     _get_award_or_404(db, award_id)
     return db.query(InventoryItem).filter(InventoryItem.award_id == award_id).all()
+
+
+class _KitOpBody(BaseModel):
+    quantity: int = 1
+    kit_type: Optional[str] = None
+
+
+@router.get("/{award_id}/inventory/kit-status")
+def get_kit_status(award_id: int, db: Session = Depends(get_db)):
+    award = _get_award_or_404(db, award_id)
+    return kit_status(db, award)
+
+
+@router.post("/{award_id}/inventory/assemble")
+def assemble_inventory_kits(
+    award_id: int, body: _KitOpBody, db: Session = Depends(get_db),
+):
+    award = _get_award_or_404(db, award_id)
+    result = assemble_sets(db, award, body.quantity, kit_type_label=body.kit_type)
+    db.commit()
+    return result
+
+
+@router.post("/{award_id}/inventory/disassemble")
+def disassemble_inventory_kits(
+    award_id: int, body: _KitOpBody, db: Session = Depends(get_db),
+):
+    award = _get_award_or_404(db, award_id)
+    result = disassemble_sets(db, award, body.quantity, kit_type_label=body.kit_type)
+    db.commit()
+    return result
+
+
+@router.post("/{award_id}/establishment/protocol-file", status_code=status.HTTP_204_NO_CONTENT)
+async def upload_establishment_protocol(
+    award_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    obj = db.query(AwardEstablishment).filter(AwardEstablishment.award_id == award_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Establishment not found")
+    data = await file.read()
+    obj.protocol_data = data
+    obj.protocol_filename = file.filename or "protocol.bin"
+    obj.protocol_content_type = file.content_type
+    obj.has_protocol_data = True
+    db.commit()
+
+
+@router.get("/{award_id}/establishment/protocol-file")
+def download_establishment_protocol(award_id: int, db: Session = Depends(get_db)):
+    obj = db.query(AwardEstablishment).filter(AwardEstablishment.award_id == award_id).first()
+    if not obj or not obj.protocol_data:
+        raise HTTPException(status_code=404, detail="Protocol file not found")
+    return Response(
+        content=obj.protocol_data,
+        media_type=obj.protocol_content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{obj.protocol_filename or "protocol.bin"}"',
+        },
+    )
+
+
+class _DecorationDisposalCreate(BaseModel):
+    component_type: ComponentType
+    target: str = "laureate"
+    laureate_award_id: Optional[int] = None
+    event_name: Optional[str] = None
+    reason: Optional[str] = None
+    disposal_date: Optional[date] = None
+    note: Optional[str] = None
+
+
+@router.get("/{award_id}/decoration-disposals")
+def list_decoration_disposals(award_id: int, db: Session = Depends(get_db)):
+    _get_award_or_404(db, award_id)
+    rows = (
+        db.query(DecorationDisposal)
+        .filter(DecorationDisposal.award_id == award_id)
+        .order_by(DecorationDisposal.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "component_type": r.component_type.value if r.component_type else None,
+            "target": r.target,
+            "laureate_award_id": r.laureate_award_id,
+            "event_name": r.event_name,
+            "reason": r.reason,
+            "disposal_date": r.disposal_date,
+            "note": r.note,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{award_id}/decoration-disposals", status_code=status.HTTP_201_CREATED)
+def create_decoration_disposal(
+    award_id: int, body: _DecorationDisposalCreate, db: Session = Depends(get_db),
+):
+    award = _get_award_or_404(db, award_id)
+    if award.award_type != AwardType.DECORATION:
+        raise HTTPException(status_code=400, detail="Только для наград типа «Украшения»")
+    item = (
+        db.query(InventoryItem)
+        .filter(
+            InventoryItem.award_id == award_id,
+            InventoryItem.component_type == body.component_type,
+        )
+        .first()
+    )
+    if item is None or (item.available_count or 0) < 1:
+        raise HTTPException(status_code=400, detail="Недостаточно остатка на складе")
+    item.available_count = (item.available_count or 0) - 1
+    item.issued_count = (item.issued_count or 0) + 1
+    _reconcile_inventory_counts(item)
+    obj = DecorationDisposal(
+        award_id=award_id,
+        laureate_award_id=body.laureate_award_id,
+        component_type=body.component_type,
+        target=body.target,
+        event_name=body.event_name,
+        reason=body.reason,
+        disposal_date=body.disposal_date,
+        note=body.note,
+    )
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return {"id": obj.id}
+
+
+class _KitDisposalCreate(BaseModel):
+    target: str = "other"
+    quantity: int = 1
+    laureate_award_id: Optional[int] = None
+    event_name: Optional[str] = None
+    reason: Optional[str] = None
+    protocol_number: Optional[str] = None
+    disposal_date: Optional[date] = None
+    note: Optional[str] = None
+
+
+@router.get("/{award_id}/kit-disposals")
+def list_kit_disposals(award_id: int, db: Session = Depends(get_db)):
+    _get_award_or_404(db, award_id)
+    rows = (
+        db.query(KitDisposal)
+        .filter(KitDisposal.award_id == award_id)
+        .order_by(KitDisposal.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "target": r.target,
+            "quantity": r.quantity,
+            "laureate_award_id": r.laureate_award_id,
+            "event_name": r.event_name,
+            "reason": r.reason,
+            "protocol_number": r.protocol_number,
+            "disposal_date": r.disposal_date,
+            "note": r.note,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{award_id}/kit-disposals", status_code=status.HTTP_201_CREATED)
+def register_kit_disposal(
+    award_id: int, body: _KitDisposalCreate, db: Session = Depends(get_db),
+):
+    _get_award_or_404(db, award_id)
+    obj = create_kit_disposal(
+        db,
+        award_id=award_id,
+        target=body.target,
+        quantity=body.quantity,
+        laureate_award_id=body.laureate_award_id,
+        event_name=body.event_name,
+        reason=body.reason,
+        protocol_number=body.protocol_number,
+        disposal_date=body.disposal_date,
+        note=body.note,
+    )
+    db.commit()
+    db.refresh(obj)
+    return {"id": obj.id}
+
+
+class _UniversalStockUpdate(BaseModel):
+    certificate_count: Optional[int] = None
+    box_count: Optional[int] = None
+
+
+@router.get("/universal-stock")
+def read_universal_stock(db: Session = Depends(get_db)):
+    row = get_universal_stock(db)
+    return {
+        "certificate_count": row.certificate_count or 0,
+        "box_count": row.box_count or 0,
+    }
+
+
+@router.put("/universal-stock")
+def update_universal_stock(body: _UniversalStockUpdate, db: Session = Depends(get_db)):
+    row = get_universal_stock(db)
+    if body.certificate_count is not None:
+        row.certificate_count = max(0, int(body.certificate_count))
+    if body.box_count is not None:
+        row.box_count = max(0, int(body.box_count))
+    db.commit()
+    return {
+        "certificate_count": row.certificate_count or 0,
+        "box_count": row.box_count or 0,
+    }
+
+
+class _ToKitBody(BaseModel):
+    component: str
+    quantity: int = 1
+
+
+@router.post("/{award_id}/inventory/to-kit")
+def move_universal_to_kit(
+    award_id: int, body: _ToKitBody, db: Session = Depends(get_db),
+):
+    _get_award_or_404(db, award_id)
+    result = transfer_universal_to_award(
+        db, award_id, body.component, body.quantity,
+    )
+    db.commit()
+    return result

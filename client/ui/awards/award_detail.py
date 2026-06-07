@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QTextEdit, QDateEdit, QComboBox, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QLabel,
     QMessageBox, QAbstractItemView, QDialog, QGroupBox, QScrollArea,
-    QSizePolicy, QFileDialog,
+    QSizePolicy, QFileDialog, QCheckBox,
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QDate, QTimer
 from PyQt5.QtGui import QImage, QPixmap
@@ -13,8 +13,68 @@ from PyQt5.QtGui import QImage, QPixmap
 from api_client import APIClient, APIError
 from ui.tab_helpers import configure_tab_bar_no_clip
 from ui.numeric_sort_item import NumericSortTableItem
+from ui.table_fill import configure_table_rows
+from ui.awards.production_component_dialog import (
+    ProductionComponentDialog, PRODUCTION_STAGE_STATUSES,
+)
+from ui.awards.award_warehouse_dialog import AwardWarehouseDialog
 
 APPROVAL_TYPES = ["НК", "Геральдисты", "Родственники", "Спонсоры"]
+
+_APPROVAL_TYPE_RU_TO_API = {
+    "НК": "nk",
+    "Геральдисты": "heraldists",
+    "Родственники": "relatives",
+    "Спонсоры": "sponsors",
+}
+_APPROVAL_TYPE_API_TO_RU = {v: k for k, v in _APPROVAL_TYPE_RU_TO_API.items()}
+
+
+def _approval_body_for_api(raw: dict, award_id: int) -> dict:
+    ru = (raw.get("approval_type") or "").strip()
+    out: dict = {
+        "award_id": award_id,
+        "approval_type": _APPROVAL_TYPE_RU_TO_API.get(ru, "nk"),
+    }
+    for key in ("approver_name", "status"):
+        v = (raw.get(key) or "").strip()
+        if v:
+            out[key] = v
+    d = (raw.get("date") or "").strip()
+    if d:
+        out["date"] = d
+    details = (raw.get("details") or raw.get("comment") or "").strip()
+    if details:
+        out["details"] = details
+    return out
+
+
+def _approval_form_to_update_api(raw: dict) -> dict:
+    out: dict = {}
+    ru = (raw.get("approval_type") or "").strip()
+    if ru:
+        out["approval_type"] = _APPROVAL_TYPE_RU_TO_API.get(ru, "nk")
+    for key in ("approver_name", "status"):
+        v = (raw.get(key) or "").strip()
+        if v:
+            out[key] = v
+    d = (raw.get("date") or "").strip()
+    if d:
+        out["date"] = d
+    details = (raw.get("details") or raw.get("comment") or "").strip()
+    if details:
+        out["details"] = details
+    return out
+
+
+def _approval_dialog_values(item: dict) -> dict:
+    api_type = item.get("approval_type", "")
+    return {
+        "approval_type": _APPROVAL_TYPE_API_TO_RU.get(api_type, api_type),
+        "date": str(item.get("date") or ""),
+        "status": item.get("status") or "",
+        "details": item.get("details") or "",
+    }
 
 PRODUCTION_COMPONENT_TYPES = [
     "Медаль",
@@ -40,6 +100,14 @@ _PRODUCTION_COMPONENT_RU_TO_API = {
     "Другое": "badge",
 }
 _PRODUCTION_COMPONENT_API_TO_RU = {v: k for k, v in _PRODUCTION_COMPONENT_RU_TO_API.items()}
+
+_STAGE_COMPONENT_RU = {
+    "medal": "Медаль",
+    "badge": "Значок",
+    "cufflinks": "Запонки",
+    "pendant": "Кулон",
+    "ppz": "ППЗ",
+}
 
 
 def _production_dialog_field_defs():
@@ -592,6 +660,18 @@ class _EstablishmentTab(QWidget):
             self.form.addRow(label, w)
 
         root.addLayout(self.form)
+
+        proto_row = QHBoxLayout()
+        self.protocol_label = QLabel("Файл протокола: нет")
+        btn_proto = QPushButton("Загрузить файл…")
+        btn_proto.clicked.connect(self._on_upload_protocol)
+        btn_dl = QPushButton("Скачать")
+        btn_dl.clicked.connect(self._on_download_protocol)
+        proto_row.addWidget(self.protocol_label, 1)
+        proto_row.addWidget(btn_proto)
+        proto_row.addWidget(btn_dl)
+        root.addLayout(proto_row)
+
         root.addStretch()
 
         btn_row = QHBoxLayout()
@@ -623,7 +703,39 @@ class _EstablishmentTab(QWidget):
             else:
                 w.setText(str(val or ""))
             w.blockSignals(False)
+        if data.get("has_protocol_file") or data.get("protocol_filename"):
+            self.protocol_label.setText(f"Файл: {data.get('protocol_filename') or 'есть'}")
+        else:
+            self.protocol_label.setText("Файл протокола: нет")
         self._set_dirty(False)
+
+    def _on_upload_protocol(self):
+        if self.award_id is None or not self._exists:
+            QMessageBox.warning(self, "Протокол", "Сначала сохраните данные учреждения.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Файл протокола", "", "Все файлы (*.*)")
+        if not path:
+            return
+        try:
+            self.api.upload_establishment_protocol(self.award_id, path)
+            self.protocol_label.setText(f"Файл: {path.replace(chr(92), '/').split('/')[-1]}")
+            QMessageBox.information(self, "Протокол", "Файл загружен.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", str(e.detail))
+
+    def _on_download_protocol(self):
+        if self.award_id is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить протокол", "protocol.bin", "Все файлы (*.*)")
+        if not path:
+            return
+        try:
+            data = self.api.download_establishment_protocol(self.award_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Протокол", "Файл сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", str(e.detail))
 
     def _mark_dirty(self):
         self._set_dirty(True)
@@ -794,6 +906,7 @@ class _ApprovalsTab(QWidget):
         super().__init__(parent)
         self.api = api
         self.award_id: int | None = None
+        self._items: list[dict] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -803,6 +916,14 @@ class _ApprovalsTab(QWidget):
         self.btn_add = QPushButton("Добавить согласование")
         self.btn_add.clicked.connect(self._on_add)
         btn_row.addWidget(self.btn_add)
+        self.btn_edit = QPushButton("Изменить")
+        self.btn_edit.setProperty("class", "btn-secondary")
+        self.btn_edit.clicked.connect(self._on_edit)
+        btn_row.addWidget(self.btn_edit)
+        self.btn_del = QPushButton("Удалить")
+        self.btn_del.setProperty("class", "btn-secondary")
+        self.btn_del.clicked.connect(self._on_delete)
+        btn_row.addWidget(self.btn_del)
         root.addLayout(btn_row)
 
         self.table = QTableWidget()
@@ -826,16 +947,40 @@ class _ApprovalsTab(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить согласования.\n{e}")
             return
 
+        self._items = items or []
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        self.table.setRowCount(len(items))
-        for row, item in enumerate(items):
-            self.table.setItem(row, 0, NumericSortTableItem(str(item.get("id", "")), item.get("id")))
-            self.table.setItem(row, 1, QTableWidgetItem(item.get("approval_type", "")))
-            self.table.setItem(row, 2, QTableWidgetItem(item.get("date", "")))
+        self.table.setRowCount(len(self._items))
+        for row, item in enumerate(self._items):
+            id_cell = NumericSortTableItem(str(item.get("id", "")), item.get("id"))
+            try:
+                id_cell.setData(Qt.UserRole, int(item.get("id")))
+            except (TypeError, ValueError):
+                pass
+            self.table.setItem(row, 0, id_cell)
+            api_type = item.get("approval_type", "")
+            self.table.setItem(row, 1, QTableWidgetItem(_APPROVAL_TYPE_API_TO_RU.get(api_type, api_type)))
+            self.table.setItem(row, 2, QTableWidgetItem(str(item.get("date") or "")))
             self.table.setItem(row, 3, QTableWidgetItem(item.get("status", "")))
-            self.table.setItem(row, 4, QTableWidgetItem(item.get("comment", "")))
+            self.table.setItem(row, 4, QTableWidgetItem(item.get("details", "")))
         self.table.setSortingEnabled(True)
+
+    def _approval_id_from_row(self, row: int) -> int | None:
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        if not it:
+            return None
+        pid = it.data(Qt.UserRole)
+        if pid is None:
+            try:
+                pid = int(it.text())
+            except ValueError:
+                return None
+        try:
+            return int(pid)
+        except (TypeError, ValueError):
+            return None
 
     def _on_add(self):
         if self.award_id is None:
@@ -844,7 +989,7 @@ class _ApprovalsTab(QWidget):
             ("Тип:", "approval_type", "combo"),
             ("Дата:", "date", "date"),
             ("Статус:", "status", "str"),
-            ("Комментарий:", "comment", "text"),
+            ("Комментарий:", "details", "text"),
         ], self)
         combo = dlg.combo_widget("approval_type")
         for t in APPROVAL_TYPES:
@@ -852,10 +997,71 @@ class _ApprovalsTab(QWidget):
 
         if dlg.exec_() == QDialog.Accepted:
             try:
-                self.api.create_approval(self.award_id, dlg.get_data())
+                self.api.create_approval(
+                    self.award_id,
+                    _approval_body_for_api(dlg.get_data(), self.award_id),
+                )
                 self.load(self.award_id)
             except APIError as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось добавить согласование.\n{e}")
+
+    def _on_edit(self):
+        if self.award_id is None:
+            return
+        pid = self._approval_id_from_row(self.table.currentRow())
+        if pid is None:
+            QMessageBox.information(self, "Изменение", "Выберите строку в таблице.")
+            return
+        item = next(
+            (x for x in self._items if x.get("id") == pid or str(x.get("id")) == str(pid)),
+            None,
+        )
+        if item is None:
+            return
+        dlg = _AddRowDialog(
+            "Изменить согласование",
+            [
+                ("Тип:", "approval_type", "combo"),
+                ("Дата:", "date", "date"),
+                ("Статус:", "status", "str"),
+                ("Комментарий:", "details", "text"),
+            ],
+            self,
+            ok_button_text="Сохранить",
+        )
+        combo = dlg.combo_widget("approval_type")
+        for t in APPROVAL_TYPES:
+            combo.addItem(t)
+        dlg.set_values(_approval_dialog_values(item))
+        if dlg.exec_() == QDialog.Accepted:
+            try:
+                self.api.update_approval(int(pid), _approval_form_to_update_api(dlg.get_data()))
+                self.load(self.award_id)
+            except APIError as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+
+    def _on_delete(self):
+        if self.award_id is None:
+            return
+        pid = self._approval_id_from_row(self.table.currentRow())
+        if pid is None:
+            QMessageBox.information(self, "Удаление", "Выберите строку в таблице.")
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Удаление",
+                f"Удалить согласование № {pid}?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            != QMessageBox.Yes
+        ):
+            return
+        try:
+            self.api.delete_approval(int(pid))
+            self.load(self.award_id)
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить.\n{e}")
 
 
 # ── Tab: Производство ───────────────────────────────────────────────────
@@ -871,14 +1077,50 @@ class _ProductionsTab(QWidget):
         "Статус",
     ]
 
+    STAGE_COLUMNS = ["Этап", "Статус", "Дата", "Вложение"]
+
     def __init__(self, api: APIClient, parent=None):
         super().__init__(parent)
         self.api = api
         self.award_id: int | None = None
         self._items: list[dict] = []
+        self._stage_components: list[dict] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
+
+        stages_group = QGroupBox("Этапы производства (ТЗ — 10 этапов на компонент)")
+        sg = QVBoxLayout(stages_group)
+        comp_row = QHBoxLayout()
+        comp_row.addWidget(QLabel("Компонент:"))
+        self.stage_component_combo = QComboBox()
+        self.stage_component_combo.currentIndexChanged.connect(self._on_stage_component_changed)
+        comp_row.addWidget(self.stage_component_combo, 1)
+        self.stage_ready_check = QCheckBox("Компонент готов")
+        comp_row.addWidget(self.stage_ready_check)
+        self.btn_save_stages = QPushButton("Сохранить этапы")
+        self.btn_save_stages.clicked.connect(self._on_save_stages)
+        comp_row.addWidget(self.btn_save_stages)
+        self.btn_open_component = QPushButton("Открыть компонент…")
+        self.btn_open_component.setProperty("class", "btn-secondary")
+        self.btn_open_component.clicked.connect(self._on_open_component_dialog)
+        comp_row.addWidget(self.btn_open_component)
+        sg.addLayout(comp_row)
+
+        self.stages_table = QTableWidget()
+        self.stages_table.setColumnCount(len(self.STAGE_COLUMNS))
+        self.stages_table.setHorizontalHeaderLabels(self.STAGE_COLUMNS)
+        self.stages_table.horizontalHeader().setStretchLastSection(True)
+        self.stages_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.stages_table.verticalHeader().setVisible(False)
+        configure_table_rows(self.stages_table, 36)
+        self.stages_table.doubleClicked.connect(self._on_stages_double_click)
+        sg.addWidget(self.stages_table)
+        root.addWidget(stages_group)
+
+        orders_label = QLabel("Заказы на производство")
+        orders_label.setProperty("class", "section-title")
+        root.addWidget(orders_label)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -909,8 +1151,127 @@ class _ProductionsTab(QWidget):
         self.table.horizontalHeader().setSortIndicatorShown(True)
         root.addWidget(self.table, 1)
 
+    def _load_stages(self):
+        if self.award_id is None:
+            return
+        try:
+            data = self.api.get_production_stages(self.award_id)
+        except APIError as e:
+            QMessageBox.warning(self, "Производство", f"Этапы: {e.detail}")
+            self._stage_components = []
+            self.stage_component_combo.clear()
+            return
+        self._stage_components = data.get("components") or []
+        self.stage_component_combo.blockSignals(True)
+        self.stage_component_combo.clear()
+        for comp in self._stage_components:
+            api_ct = comp.get("component_type", "")
+            label = _STAGE_COMPONENT_RU.get(api_ct, _PRODUCTION_COMPONENT_API_TO_RU.get(api_ct, api_ct))
+            self.stage_component_combo.addItem(label, api_ct)
+        self.stage_component_combo.blockSignals(False)
+        if self._stage_components:
+            self._fill_stages_table(self._stage_components[0])
+        else:
+            self.stages_table.setRowCount(0)
+
+    def _current_stage_component(self) -> dict | None:
+        api_ct = self.stage_component_combo.currentData()
+        if not api_ct:
+            return None
+        return next((c for c in self._stage_components if c.get("component_type") == api_ct), None)
+
+    def _fill_stages_table(self, comp: dict):
+        stages = comp.get("stages") or []
+        self.stages_table.setRowCount(len(stages))
+        self.stage_ready_check.setChecked(bool(comp.get("is_ready")))
+        for row, st in enumerate(stages):
+            label_item = QTableWidgetItem(st.get("label") or st.get("stage_key", ""))
+            label_item.setFlags(label_item.flags() & ~Qt.ItemIsEditable)
+            label_item.setData(Qt.UserRole, st.get("stage_key"))
+            self.stages_table.setItem(row, 0, label_item)
+
+            status_combo = QComboBox()
+            status_combo.setEditable(True)
+            cur = st.get("status") or ""
+            for s in PRODUCTION_STAGE_STATUSES:
+                status_combo.addItem(s)
+            if cur and cur not in PRODUCTION_STAGE_STATUSES:
+                status_combo.addItem(cur)
+            idx = status_combo.findText(cur)
+            status_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.stages_table.setCellWidget(row, 1, status_combo)
+
+            self.stages_table.setItem(row, 2, QTableWidgetItem(str(st.get("stage_date") or "")))
+            att_count = int(st.get("attachment_count") or 0)
+            att_text = st.get("attachment_note") or ""
+            if att_count:
+                att_text = f"{att_text} [{att_count} файл.]".strip()
+            self.stages_table.setItem(row, 3, QTableWidgetItem(att_text))
+
+    def _on_stage_component_changed(self, _index: int):
+        comp = self._current_stage_component()
+        if comp:
+            self._fill_stages_table(comp)
+
+    def _on_save_stages(self):
+        if self.award_id is None:
+            return
+        api_ct = self.stage_component_combo.currentData()
+        if not api_ct:
+            return
+        stages = []
+        for row in range(self.stages_table.rowCount()):
+            key_item = self.stages_table.item(row, 0)
+            if key_item is None:
+                continue
+            note_item = self.stages_table.item(row, 3)
+            note = note_item.text() if note_item else ""
+            if " файл.]" in note:
+                note = note.rsplit("[", 1)[0].strip()
+            stages.append({
+                "stage_key": key_item.data(Qt.UserRole),
+                "status": (
+                    self.stages_table.cellWidget(row, 1).currentText()
+                    if isinstance(self.stages_table.cellWidget(row, 1), QComboBox)
+                    else ""
+                ),
+                "stage_date": (self.stages_table.item(row, 2).text() if self.stages_table.item(row, 2) else ""),
+                "attachment_note": note,
+            })
+        try:
+            updated = self.api.update_production_stages(self.award_id, {
+                "component_type": api_ct,
+                "is_ready": self.stage_ready_check.isChecked(),
+                "stages": stages,
+            })
+        except APIError as e:
+            QMessageBox.critical(self, "Производство", str(e.detail))
+            return
+        for i, comp in enumerate(self._stage_components):
+            if comp.get("component_type") == api_ct:
+                self._stage_components[i] = updated
+                break
+        QMessageBox.information(self, "Производство", "Этапы сохранены.")
+
+    def _on_open_component_dialog(self):
+        if self.award_id is None:
+            return
+        comp = self._current_stage_component()
+        api_ct = self.stage_component_combo.currentData()
+        if not api_ct:
+            return
+        dlg = ProductionComponentDialog(
+            self.api, self.award_id, api_ct, comp, self,
+        )
+        dlg.exec_()
+        self._load_stages()
+
+    def _on_stages_double_click(self, _index):
+        self._on_open_component_dialog()
+
     def load(self, award_id: int):
         self.award_id = award_id
+        self._load_stages()
         try:
             items = self.api.get_productions(award_id)
         except APIError as e:
@@ -1083,6 +1444,11 @@ class AwardDetailPage(QWidget):
         self.title_label.setStyleSheet("padding: 0;")
         header.addWidget(self.title_label, 1)
 
+        self.btn_warehouse = QPushButton("Склад награды")
+        self.btn_warehouse.setProperty("class", "btn-secondary")
+        self.btn_warehouse.clicked.connect(self._on_open_warehouse)
+        header.addWidget(self.btn_warehouse)
+
         root.addLayout(header)
 
         self.tabs = QTabWidget()
@@ -1122,6 +1488,15 @@ class AwardDetailPage(QWidget):
         name = self.tab_chars.fields.get("name")
         if name and name.text():
             self.title_label.setText(f"Награда: {name.text()}")
+
+    def _on_open_warehouse(self):
+        if self.award_id is None:
+            return
+        name = self.title_label.text().replace("Награда: ", "").replace("Награда ID ", "")
+        if name.startswith("Награда"):
+            name = f"ID {self.award_id}"
+        dlg = AwardWarehouseDialog(self.api, self.award_id, name, self)
+        dlg.exec_()
 
     # ── unsaved changes guard ────────────────────────────────────────
 

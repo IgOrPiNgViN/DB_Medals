@@ -13,7 +13,16 @@ class CommitteeMemberBase(BaseModel):
     position: Optional[str] = None
     organization: Optional[str] = None
     phone: Optional[str] = None
+    phone_work: Optional[str] = None
     email: Optional[str] = None
+    birth_date: Optional[date] = None
+    assistant_name: Optional[str] = None
+    assistant_phone: Optional[str] = None
+    inclusion_protocol_number: Optional[str] = None
+    inclusion_protocol_date: Optional[date] = None
+    consent_letter: Optional[str] = None
+    photo_filename: Optional[str] = None
+    is_non_voting: Optional[bool] = False
     is_active: Optional[bool] = True
     notes: Optional[str] = None
 
@@ -27,13 +36,23 @@ class CommitteeMemberUpdate(BaseModel):
     position: Optional[str] = None
     organization: Optional[str] = None
     phone: Optional[str] = None
+    phone_work: Optional[str] = None
     email: Optional[str] = None
+    birth_date: Optional[date] = None
+    assistant_name: Optional[str] = None
+    assistant_phone: Optional[str] = None
+    inclusion_protocol_number: Optional[str] = None
+    inclusion_protocol_date: Optional[date] = None
+    consent_letter: Optional[str] = None
+    photo_filename: Optional[str] = None
+    is_non_voting: Optional[bool] = None
     is_active: Optional[bool] = None
     notes: Optional[str] = None
 
 
 class CommitteeMemberRead(CommitteeMemberBase):
     id: int
+    has_photo: bool = False
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

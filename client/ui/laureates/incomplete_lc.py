@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QComboBox, QPushButton, QLabel, QMessageBox,
-    QAbstractItemView,
+    QHeaderView, QPushButton, QLabel, QMessageBox, QAbstractItemView,
+    QGroupBox, QScrollArea, QFileDialog,
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QBrush
@@ -10,40 +10,39 @@ from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
 from ui.fetch_worker import run_api_fetch, thread_api_call
-from ui.laureates_cache import LaureatesCache
-from ui.table_fill import fill_table_batched, enable_table_sort_on_click
+from ui.table_fill import enable_table_sort_on_click
 
-STAGE_LABELS = {
-    "nomination": "Выдвижение",
-    "voting": "Голосование",
-    "decision": "Решение",
-    "registration": "Оформление",
-    "consent_pd": "Согласие ПД",
-    "ceremony": "Вручение",
-    "publication": "Опубликование",
-}
+SECTIONS = [
+    ("for_voting", "1. На голосование"),
+    ("for_registration", "2. На оформление"),
+    ("for_ceremony", "3. На вручение"),
+    ("for_publication", "4. На опубликование"),
+]
 
-ALL_STAGES = list(STAGE_LABELS.keys())
+COLS = [
+    ("laureate_name", "ФИО"),
+    ("award_name", "Награда"),
+    ("decision_date", "Присуждение"),
+    ("registration_date", "Оформление"),
+    ("ceremony_date", "Вручение"),
+    ("publication_date", "Опубликование НК"),
+    ("publication_smi_web_count", "Сайты СМИ"),
+    ("publication_smi_print_count", "Бум. СМИ"),
+]
 
-GREEN = QColor("#4CAF50")
-RED = QColor("#EF5350")
-GREEN_BG = QColor("#E8F5E9")
-RED_BG = QColor("#FFEBEE")
-GREEN_BRUSH = QBrush(GREEN)
-RED_BRUSH = QBrush(RED)
-GREEN_BG_BRUSH = QBrush(GREEN_BG)
-RED_BG_BRUSH = QBrush(RED_BG)
+GREEN_BG = QBrush(QColor("#E8F5E9"))
 
 
 class IncompleteLCPage(QWidget):
-    open_lifecycle = pyqtSignal(int)  # laureate_award_id
+    open_lifecycle = pyqtSignal(int)
+    open_bulletin = pyqtSignal(str)
 
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
         self.api = api_client
-        self._report_data: list = []
+        self._sections_data: dict = {}
+        self._tables: dict[str, QTableWidget] = {}
         self._refresh_gen = 0
-        self._fill_gen = 0
         self._build_ui()
 
     def _build_ui(self):
@@ -55,75 +54,56 @@ class IncompleteLCPage(QWidget):
         layout.addWidget(title)
 
         toolbar = QHBoxLayout()
-
-        toolbar.addWidget(QLabel("Незавершённый этап:"))
-        self.stage_filter = QComboBox()
-        self.stage_filter.addItem("Все", "")
-        for key, label in STAGE_LABELS.items():
-            self.stage_filter.addItem(label, key)
-        self.stage_filter.currentIndexChanged.connect(self._apply_filter)
-        toolbar.addWidget(self.stage_filter)
-
         toolbar.addStretch()
-
         btn_refresh = QPushButton("Обновить")
         btn_refresh.clicked.connect(self.refresh_data)
         toolbar.addWidget(btn_refresh)
-
+        btn_excel = QPushButton("Выгрузка в Excel…")
+        btn_excel.clicked.connect(self._on_excel)
+        toolbar.addWidget(btn_excel)
         btn_print = QPushButton("Печать")
         btn_print.clicked.connect(self._on_print)
         toolbar.addWidget(btn_print)
-
         btn_pdf = QPushButton("В PDF…")
         btn_pdf.setProperty("class", "btn-secondary")
         btn_pdf.clicked.connect(self._on_pdf)
         toolbar.addWidget(btn_pdf)
-
         layout.addLayout(toolbar)
 
-        self.table = QTableWidget()
-        cols = ["ID связки", "Лауреат", "Награда"] + list(STAGE_LABELS.values()) + ["Причина"]
-        self.table.setColumnCount(len(cols))
-        self.table.setHorizontalHeaderLabels(cols)
-
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
-        for i in range(3, 3 + len(STAGE_LABELS)):
-            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(len(cols) - 1, QHeaderView.Stretch)
-
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.doubleClicked.connect(self._on_double_click)
-        enable_table_sort_on_click(self.table)
-        layout.addWidget(self.table)
-
-        vote_section = QHBoxLayout()
-        vote_label = QLabel("На голосование:")
-        vote_label.setProperty("class", "section-title")
-        vote_section.addWidget(vote_label)
-        self.vote_count_label = QLabel("0")
-        vote_section.addWidget(self.vote_count_label)
-        vote_section.addStretch()
-        layout.addLayout(vote_section)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        self._sections_layout = QVBoxLayout(inner)
+        for key, label in SECTIONS:
+            group = QGroupBox(label)
+            gl = QVBoxLayout(group)
+            table = QTableWidget()
+            table.setColumnCount(len(COLS) + 1)
+            table.setHorizontalHeaderLabels(["ID"] + [c[1] for c in COLS])
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+            table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.verticalHeader().setVisible(False)
+            table.doubleClicked.connect(self._on_double_click)
+            enable_table_sort_on_click(table)
+            gl.addWidget(table)
+            if key == "for_voting":
+                btn_b = QPushButton("Перейти к бюллетеню (связь с голосованием)")
+                btn_b.clicked.connect(self._on_open_bulletin)
+                gl.addWidget(btn_b)
+            self._tables[key] = table
+            self._sections_layout.addWidget(group)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
 
         self.status_label = QLabel()
         layout.addWidget(self.status_label)
 
     def apply_from_cache_only(self) -> bool:
-        if LaureatesCache.incomplete_lifecycle is None:
-            return False
-        self._report_data = LaureatesCache.incomplete_lifecycle
-        self._apply_filter()
-        return True
+        return False
 
     def refresh_data(self):
-        if LaureatesCache.incomplete_lifecycle is not None and not self._report_data:
-            self._report_data = LaureatesCache.incomplete_lifecycle
-            self._apply_filter()
         self._fetch_from_network()
 
     def _fetch_from_network(self) -> None:
@@ -131,118 +111,107 @@ class IncompleteLCPage(QWidget):
         gen = self._refresh_gen
 
         def fetch():
-            return thread_api_call(lambda api: api.report_incomplete_lifecycle())
+            return thread_api_call(lambda api: api.report_incomplete_lifecycle_sections())
 
         run_api_fetch(
             fetch,
-            on_success=lambda data: self._on_report_loaded(data, gen),
-            on_error=lambda err: self._on_refresh_error(err, gen),
+            on_success=lambda data: self._on_loaded(data, gen),
+            on_error=lambda err: self._on_error(err, gen),
         )
 
-    def _on_report_loaded(self, data, gen: int):
+    def _on_loaded(self, data, gen: int):
         if gen != self._refresh_gen:
             return
-        LaureatesCache.set_incomplete_lifecycle(data)
-        self._report_data = data or []
-        self._apply_filter()
+        self._sections_data = (data or {}).get("sections") or {}
+        total = 0
+        for key, _ in SECTIONS:
+            rows = self._sections_data.get(key) or []
+            total += len(rows)
+            self._fill_section_table(key, rows)
+        self.status_label.setText(f"Всего в очередях: {total}")
 
-    def _on_refresh_error(self, err: str, gen: int):
+    def _on_error(self, err: str, gen: int):
         if gen != self._refresh_gen:
             return
         QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{err}")
-        self._report_data = []
-        self._apply_filter()
 
-    def _apply_filter(self):
-        stage_filter = self.stage_filter.currentData()
-        filtered = self._report_data
-        if stage_filter:
-            filtered = [
-                r for r in filtered
-                if stage_filter in r.get("incomplete_stages", [])
-                or r.get("reason") == "lifecycle not created"
-            ]
+    def _fill_section_table(self, key: str, rows: list):
+        table = self._tables[key]
+        table.setSortingEnabled(False)
+        table.setRowCount(len(rows))
+        date_cols = {3, 4, 5, 6}
+        for i, row in enumerate(rows):
+            la_id = row.get("laureate_award_id", "")
+            no_item = NumericSortTableItem(str(la_id), la_id)
+            bn = row.get("voting_bulletin_number") or ""
+            if bn:
+                no_item.setData(Qt.UserRole + 1, str(bn))
+            table.setItem(i, 0, no_item)
+            for j, (field, _) in enumerate(COLS, start=1):
+                val = row.get(field, "")
+                item = QTableWidgetItem(str(val) if val is not None else "")
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if j in date_cols and val:
+                    item.setBackground(GREEN_BG)
+                table.setItem(i, j, item)
+        table.setSortingEnabled(True)
 
-        self._fill_gen += 1
-        fill_gen = self._fill_gen
-        rows = list(filtered)
-
-        def fill_row(table, row_idx, r):
-            la_id = r.get("laureate_award_id", "")
-            table.setItem(row_idx, 0, NumericSortTableItem(str(la_id), la_id))
-            table.setItem(row_idx, 1, self._make_item(r.get("laureate_name", "")))
-            table.setItem(row_idx, 2, self._make_item(r.get("award_name", "")))
-
-            incomplete = r.get("incomplete_stages", [])
-            reason = r.get("reason", "")
-
-            if reason == "lifecycle not created":
-                for col, _ in enumerate(ALL_STAGES):
-                    item = QTableWidgetItem("—")
-                    item.setBackground(RED_BG_BRUSH)
-                    item.setForeground(RED_BRUSH)
-                    item.setTextAlignment(Qt.AlignCenter)
-                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                    table.setItem(row_idx, 3 + col, item)
-                reason_item = self._make_item("ЖЦ не создан")
-                reason_item.setForeground(RED_BRUSH)
-                table.setItem(row_idx, 3 + len(ALL_STAGES), reason_item)
-            else:
-                for col, stage_key in enumerate(ALL_STAGES):
-                    is_incomplete = stage_key in incomplete
-                    if is_incomplete:
-                        item = QTableWidgetItem("✗")
-                        item.setBackground(RED_BG_BRUSH)
-                        item.setForeground(RED_BRUSH)
-                    else:
-                        item = QTableWidgetItem("✓")
-                        item.setBackground(GREEN_BG_BRUSH)
-                        item.setForeground(GREEN_BRUSH)
-                    item.setTextAlignment(Qt.AlignCenter)
-                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                    table.setItem(row_idx, 3 + col, item)
-                table.setItem(
-                    row_idx, 3 + len(ALL_STAGES),
-                    self._make_item(", ".join(
-                        STAGE_LABELS.get(s, s) for s in incomplete
-                    )),
-                )
-
-        def done():
-            if fill_gen != self._fill_gen:
-                return
-            vote_count = 0
-            for r in rows:
-                incomplete = r.get("incomplete_stages", [])
-                reason = r.get("reason", "")
-                if reason == "lifecycle not created" or "voting" in incomplete:
-                    vote_count += 1
-            self.vote_count_label.setText(str(vote_count))
-            self.status_label.setText(f"Строк: {len(rows)}")
-
-        fill_table_batched(
-            self.table,
-            rows,
-            fill_row,
-            batch_size=25,
-            on_done=done,
-            is_cancelled=lambda: fill_gen != self._fill_gen,
-        )
-
-    @staticmethod
-    def _make_item(text: str) -> QTableWidgetItem:
-        item = QTableWidgetItem(text)
-        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        return item
+    def _on_open_bulletin(self):
+        table = self._tables.get("for_voting")
+        if table is None:
+            return
+        rows = table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(
+                self, "Бюллетень",
+                "Выберите строку в секции «На голосование».",
+            )
+            return
+        it = table.item(rows[0].row(), 0)
+        bn = it.data(Qt.UserRole + 1) if it else None
+        if not bn:
+            QMessageBox.information(
+                self, "Бюллетень",
+                "У выбранной связки не указан номер бюллетеня в ЖЦ.",
+            )
+            return
+        self.open_bulletin.emit(str(bn))
 
     def _on_double_click(self, index):
-        row = index.row()
-        la_item = self.table.item(row, 0)
-        if la_item and la_item.text():
-            self.open_lifecycle.emit(int(la_item.text()))
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            return
+        it = table.item(index.row(), 0)
+        if it and it.text():
+            self.open_lifecycle.emit(int(it.text()))
+
+    def _active_table(self) -> QTableWidget | None:
+        for table in self._tables.values():
+            if table.selectionModel() and table.selectionModel().selectedRows():
+                return table
+        return self._tables.get("for_voting")
+
+    def _on_excel(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить Excel", "незавершенный_жц.xlsx",
+            "Excel (*.xlsx);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.download_incomplete_lifecycle_sections_xlsx()
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Excel", "Файл сохранён.")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", str(e.detail))
 
     def _on_print(self):
-        print_table(self.table, "Отчёт: Незавершённый жизненный цикл", self)
+        table = self._active_table()
+        if table:
+            print_table(table, "Незавершённый жизненный цикл", self)
 
     def _on_pdf(self):
-        pdf_table(self.table, "Отчёт: Незавершённый жизненный цикл", self, "incomplete_lc.pdf")
+        table = self._active_table()
+        if table:
+            pdf_table(table, "Незавершённый жизненный цикл", self, "incomplete_lc.pdf")

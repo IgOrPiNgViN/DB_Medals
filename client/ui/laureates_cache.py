@@ -58,12 +58,19 @@ class LaureatesCache:
         for award_group in report_data or []:
             award_name = award_group.get("award_name", "")
             award_type = award_group.get("award_type", "")
+            award_id = award_group.get("award_id")
             for lau in award_group.get("laureates", []):
                 rows.append({
                     "la_id": lau.get("laureate_award_id", ""),
+                    "award_id": award_id,
                     "award_name": award_name,
                     "award_type": award_type,
                     "full_name": lau.get("full_name", ""),
+                    "position": lau.get("position", ""),
+                    "organization": lau.get("organization", ""),
+                    "protocol_number": lau.get("protocol_number", ""),
+                    "protocol_date": lau.get("protocol_date", ""),
+                    "handed_over": lau.get("handed_over", False),
                     "category": lau.get("category", ""),
                     "assigned_date": lau.get("assigned_date", ""),
                 })

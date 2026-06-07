@@ -47,11 +47,26 @@ class Award(Base):
     productions = relationship(
         "AwardProduction", back_populates="award", cascade="all, delete-orphan",
     )
+    production_stage_rows = relationship(
+        "ProductionStageRow", back_populates="award", cascade="all, delete-orphan",
+    )
+    production_component_ready = relationship(
+        "ProductionComponentReady", back_populates="award", cascade="all, delete-orphan",
+    )
     laureate_awards = relationship(
         "LaureateAward", back_populates="award", cascade="all, delete",
     )
     inventory_items = relationship(
         "InventoryItem", back_populates="award", cascade="all, delete-orphan",
+    )
+    kit_stock = relationship(
+        "AwardKitStock", back_populates="award", uselist=False, cascade="all, delete-orphan",
+    )
+    decoration_disposals = relationship(
+        "DecorationDisposal", back_populates="award", cascade="all, delete-orphan",
+    )
+    kit_disposals = relationship(
+        "KitDisposal", back_populates="award", cascade="all, delete-orphan",
     )
 
 
@@ -78,6 +93,10 @@ class AwardEstablishment(Base):
     document_date = Column(Date)
     initiator = Column(String(500))
     details = Column(Text)
+    has_protocol_data = Column(Boolean, default=False)
+    protocol_filename = Column(String(500))
+    protocol_content_type = Column(String(200))
+    protocol_data = Column(LargeBinary)
 
     award = relationship("Award", back_populates="establishment")
 
@@ -148,6 +167,52 @@ class AwardProduction(Base):
     award = relationship("Award", back_populates="productions")
 
 
+class ProductionStageRow(Base):
+    """Этап производства компонента (статус / дата / вложение)."""
+    __tablename__ = "production_stage_rows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
+    component_type = Column(String(30), nullable=False)
+    stage_key = Column(String(50), nullable=False)
+    status = Column(String(200))
+    stage_date = Column(Date)
+    attachment_note = Column(String(500))
+
+    award = relationship("Award", back_populates="production_stage_rows")
+    attachments = relationship(
+        "ProductionStageAttachment",
+        back_populates="stage_row",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProductionStageAttachment(Base):
+    """Файл вложения этапа производства (ТЗ file-008)."""
+    __tablename__ = "production_stage_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stage_row_id = Column(Integer, ForeignKey("production_stage_rows.id"), nullable=False)
+    filename = Column(String(500), nullable=False)
+    content_type = Column(String(200))
+    data = Column(LargeBinary, nullable=False)
+    uploaded_at = Column(DateTime, default=_utcnow)
+
+    stage_row = relationship("ProductionStageRow", back_populates="attachments")
+
+
+class ProductionComponentReady(Base):
+    """Флаг готовности компонента (ПРОИЗВ_*_чек)."""
+    __tablename__ = "production_component_ready"
+
+    id = Column(Integer, primary_key=True, index=True)
+    award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
+    component_type = Column(String(30), nullable=False)
+    is_ready = Column(Boolean, nullable=False, default=False)
+
+    award = relationship("Award", back_populates="production_component_ready")
+
+
 class InventoryItem(Base):
     """Учёт (склад) — физический учёт комплектующих"""
     __tablename__ = "inventory_items"
@@ -163,3 +228,62 @@ class InventoryItem(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=datetime.utcnow)
 
     award = relationship("Award", back_populates="inventory_items")
+
+
+class AwardKitStock(Base):
+    """Собранные физические комплекты на складе."""
+    __tablename__ = "award_kit_stock"
+
+    id = Column(Integer, primary_key=True, index=True)
+    award_id = Column(Integer, ForeignKey("awards.id"), nullable=False, unique=True)
+    physical_sets = Column(Integer, default=0)
+    free_sets = Column(Integer, default=0)
+    postponed_sets = Column(Integer, default=0)
+
+    award = relationship("Award", back_populates="kit_stock")
+
+
+class DecorationDisposal(Base):
+    """Выбытие украшений (лауреатам или иное)."""
+    __tablename__ = "decoration_disposals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
+    laureate_award_id = Column(Integer, ForeignKey("laureate_awards.id"), nullable=True)
+    component_type = Column(SAEnum(ComponentType), nullable=False)
+    target = Column(String(20), nullable=False, default="laureate")
+    event_name = Column(String(500))
+    reason = Column(String(500))
+    disposal_date = Column(Date)
+    note = Column(Text)
+    created_at = Column(DateTime, default=_utcnow)
+
+    award = relationship("Award", back_populates="decoration_disposals")
+
+
+class KitDisposal(Base):
+    """Выбытие комплектов (лауреатам или иное — ТЗ file-012)."""
+    __tablename__ = "kit_disposals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    award_id = Column(Integer, ForeignKey("awards.id"), nullable=False)
+    laureate_award_id = Column(Integer, ForeignKey("laureate_awards.id"), nullable=True)
+    target = Column(String(20), nullable=False, default="laureate")
+    event_name = Column(String(500))
+    reason = Column(String(500))
+    protocol_number = Column(String(100))
+    disposal_date = Column(Date)
+    note = Column(Text)
+    quantity = Column(Integer, default=1)
+    created_at = Column(DateTime, default=_utcnow)
+
+    award = relationship("Award", back_populates="kit_disposals")
+
+
+class UniversalStock(Base):
+    """Общий склад универсальных удостоверений и коробок."""
+    __tablename__ = "universal_stock"
+
+    id = Column(Integer, primary_key=True, default=1)
+    certificate_count = Column(Integer, default=0)
+    box_count = Column(Integer, default=0)

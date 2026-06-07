@@ -33,6 +33,12 @@ class Laureate(Base):
     email = Column(String(255))
     address = Column(Text)
     notes = Column(Text)
+    birth_date = Column(Date)
+    passport = Column(String(100))
+    inn = Column(String(20))
+    snils = Column(String(20))
+    regalia = Column(Text)
+    photo = Column(LargeBinary)
     created_at = Column(DateTime, default=_utcnow)
 
     awards = relationship(
@@ -89,23 +95,35 @@ class LaureateLifecycle(Base):
 
     voting_date = Column(Date)
     voting_bulletin_number = Column(String(50))
+    voting_secretariat_done = Column(Boolean, default=False)
+    voting_secretariat_date = Column(Date)
     voting_done = Column(Boolean, default=False)
 
     decision_date = Column(Date)
     decision_protocol_number = Column(String(50))
+    decision_authorized_ppz = Column(String(500))
     decision_done = Column(Boolean, default=False)
 
     registration_date = Column(Date)
     registration_signer_id = Column(Integer, ForeignKey("committee_members.id"))
     registration_certificate_number = Column(String(100))
+    registration_extract_number = Column(String(100))
+    registration_protocol_number = Column(String(100))
+    registration_pending_issue = Column(Boolean, default=False)
+    registration_pending_comment = Column(Text)
     registration_done = Column(Boolean, default=False)
 
     ceremony_date = Column(Date)
     ceremony_place = Column(String(500))
+    ceremony_officiant = Column(String(500))
+    ceremony_kit_type = Column(String(200))
     ceremony_done = Column(Boolean, default=False)
 
     publication_date = Column(Date)
     publication_source = Column(String(500))
+    publication_nk_link = Column(String(500))
+    publication_smi_web_count = Column(Integer, default=0)
+    publication_smi_print_count = Column(Integer, default=0)
     publication_done = Column(Boolean, default=False)
 
     inventory_reserved = Column(Boolean, default=False)

@@ -242,6 +242,20 @@ class TestDistribution:
         assert "text/csv" in r.headers.get("content-type", "")
         assert b"member_id" in r.content
 
+    def test_list_distributions_with_email(self, client):
+        bulletin = _create_bulletin(client, number="Б-LIST-001")
+        member = _create_member(client, full_name="List Член", email="list@test.local")
+        client.post(
+            f"/api/voting/bulletins/{bulletin['id']}/distribute",
+            json={"member_ids": [member["id"]]},
+        )
+        r = client.get(f"/api/voting/bulletins/{bulletin['id']}/distributions")
+        assert r.status_code == 200
+        items = r.json()
+        assert len(items) == 1
+        assert items[0]["member_email"] == "list@test.local"
+        assert items[0]["member_name"] == "List Член"
+
     def test_export_distributions_xlsx(self, client):
         bulletin = _create_bulletin(client, number="Б-XLSX-001")
         member = _create_member(client, full_name="XLSX Член")

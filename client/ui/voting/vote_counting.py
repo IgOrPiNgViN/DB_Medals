@@ -67,6 +67,7 @@ class VoteCountingPage(QWidget):
         self._current_bulletin_id: int | None = None
         self._questions: list[dict] = []
         self._eligible_members: list[dict] = []
+        self._decision_popup_shown = False
         self._build_ui()
         self._load_bulletins()
 
@@ -156,11 +157,24 @@ class VoteCountingPage(QWidget):
         if self._bulletins:
             self._on_bulletin_changed(0)
 
+    def select_bulletin(self, bulletin_id: int):
+        """Выбрать бюллетень по ID (переход из мониторинга)."""
+        for i, b in enumerate(self._bulletins):
+            if b.get("id") == bulletin_id:
+                self.bulletin_combo.setCurrentIndex(i)
+                return
+        self._load_bulletins()
+        for i, b in enumerate(self._bulletins):
+            if b.get("id") == bulletin_id:
+                self.bulletin_combo.setCurrentIndex(i)
+                return
+
     def _on_bulletin_changed(self, idx: int):
         if idx < 0 or idx >= len(self._bulletins):
             self._current_bulletin_id = None
             return
         self._current_bulletin_id = self._bulletins[idx]["id"]
+        self._decision_popup_shown = False
         self._load_eligible_members()
         self._load_results()
 
@@ -242,6 +256,13 @@ class VoteCountingPage(QWidget):
         if results and all_pass:
             self.lbl_decision.setText("✓ Решение принято (≥65% по всем вопросам)")
             self.lbl_decision.setStyleSheet("color: #2E7D32;")
+            if not self._decision_popup_shown:
+                self._decision_popup_shown = True
+                QMessageBox.information(
+                    self,
+                    "Решение принято",
+                    "По всем вопросам бюллетеня набрано не менее 65% голосов «За».",
+                )
         elif results:
             self.lbl_decision.setText("✗ Решение не принято — не все вопросы набрали 65%")
             self.lbl_decision.setStyleSheet("color: #C62828;")

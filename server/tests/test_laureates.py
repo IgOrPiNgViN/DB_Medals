@@ -210,12 +210,18 @@ class TestLifecycle:
         assert data["nomination_done"] is True
         assert data["voting_done"] is True
 
-    def test_create_lifecycle_conflict(self, client):
+    def test_create_lifecycle_upsert(self, client):
         la = self._setup(client)
-        payload = {"laureate_award_id": la["id"]}
-        client.post(f"/api/laureates/{la['id']}/lifecycle", json=payload)
-        r2 = client.post(f"/api/laureates/{la['id']}/lifecycle", json=payload)
-        assert r2.status_code == 409
+        payload = {"laureate_award_id": la["id"], "nomination_done": False}
+        r1 = client.post(f"/api/laureates/{la['id']}/lifecycle", json=payload)
+        assert r1.status_code == 201
+        r2 = client.post(
+            f"/api/laureates/{la['id']}/lifecycle",
+            json={"laureate_award_id": la["id"], "nomination_done": True},
+        )
+        assert r2.status_code == 201
+        r3 = client.get(f"/api/laureates/{la['id']}/lifecycle")
+        assert r3.json()["nomination_done"] is True
 
 
 # ── Consent file ──────────────────────────────────────────────────────────────

@@ -5,9 +5,25 @@
 Фото/
 фото/
 
+# Фото людей — в PostgreSQL и в Access; на диск только для повторного импорта
+data/photos/nk/*
+!data/photos/nk/.gitkeep
+data/photos/persons/*
+!data/photos/persons/.gitkeep
+
+# Макеты ТЗ в корне (PDF уже в docs/reference/)
+Техническое задание - БД - 11-12-2025/
+
 # Выгрузки картинок из Access
 migration/extracted_images/
 award_images/
+
+# Дампы бэкапа API
+backups/
+server/backups/
+
+# Временные файлы миграций/отладки
+migration/_*.txt
 
 # Скрипты генерации таблиц и приложений для отчёта ВКР (локальные)
 migration/build_abbreviations_docx.py

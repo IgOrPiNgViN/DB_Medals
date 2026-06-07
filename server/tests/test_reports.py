@@ -69,7 +69,15 @@ class TestReportsAvailability:
     def test_incomplete_lifecycle(self, client):
         r = client.get("/api/reports/incomplete-lifecycle")
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+
+    def test_incomplete_lifecycle_sections(self, client):
+        r = client.get("/api/reports/incomplete-lifecycle-sections")
+        assert r.status_code == 200
+        body = r.json()
+        assert "sections" in body
+        assert "for_voting" in body["sections"]
+        assert "for_publication" in body["sections"]
+        assert "counts" in body
 
     def test_lifecycle_by_stage(self, client):
         r = client.get("/api/reports/lifecycle-by-stage")
@@ -213,6 +221,18 @@ class TestReportsContent:
         assert "award_type" in la_entry
         assert "laureate_category" in la_entry
 
+    def test_warehouse_grouped(self, client):
+        r = client.get("/api/reports/warehouse-summary-grouped", params={"award_type": "medal"})
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+
+    def test_statistics_groups(self, client):
+        r = client.get("/api/reports/statistics")
+        assert r.status_code == 200
+        data = r.json()
+        assert "groups" in data
+        assert "total" in data
+
     def test_warehouse_low_stock_flag(self, client):
         award = _create_award(client, name="Малый Склад")
         _add_inventory(
@@ -229,3 +249,43 @@ class TestReportsContent:
         assert len(award_items) >= 1
         # available < 10 → low_stock = True
         assert award_items[0]["low_stock"] is True
+
+    def test_approvals_monitor(self, client):
+        award = _create_award(client, name="Монитор Соглас")
+        client.post(
+            f"/api/awards/{award['id']}/approvals",
+            json={"award_id": award["id"], "approval_type": "nk", "status": "ожидание"},
+        )
+        r = client.get("/api/reports/approvals-monitor")
+        assert r.status_code == 200
+        items = r.json()
+        assert any(i["award_id"] == award["id"] for i in items)
+
+    def test_awards_by_bulletin(self, client):
+        award = _create_award(client, name="Бюллетень Медаль")
+        laureate = _create_laureate(client, full_name="Бюллетень Лауреат")
+        la = _link_award(client, laureate["id"], award["id"])
+        client.put(
+            f"/api/laureates/{la['id']}/lifecycle",
+            json={"voting_bulletin_number": "B-TEST-42"},
+        )
+        r = client.get("/api/reports/awards-by-bulletin")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total_links"] >= 1
+        assert any(g["bulletin_number"] == "B-TEST-42" for g in data["groups"])
+
+    def test_warehouse_reservations_postponed(self, client):
+        award = _create_award(client, name="Отложенная Медаль")
+        laureate = _create_laureate(client, full_name="Отложенный Лауреат")
+        la = _link_award(client, laureate["id"], award["id"])
+        client.put(
+            f"/api/laureates/{la['id']}/lifecycle",
+            json={"registration_pending_issue": True},
+        )
+        r = client.get("/api/reports/warehouse-reservations")
+        assert r.status_code == 200
+        data = r.json()
+        assert "postponed_pending" in data
+        ids = [x["laureate_award_id"] for x in data["postponed_pending"]]
+        assert la["id"] in ids

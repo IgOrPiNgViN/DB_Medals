@@ -1,15 +1,26 @@
 from datetime import date as dt_date
+import math
 import re
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from docx import Document
 
 from database import get_db
+from config import (
+    BULLETIN_TEMPLATE_PATH,
+    PROTOCOL_BRIEF_TEMPLATE_PATH,
+    PROTOCOL_FULL_TEMPLATE_PATH,
+    EXTRACT_MEDAL_TEMPLATE_PATH,
+    EXTRACT_PPZ_TEMPLATE_PATH,
+    PPZ_SUBMISSION_TEMPLATE_PATH,
+    MONITORING_TEMPLATE_PATH,
+)
+from services.docx_templates import render_template
 from models.voting import (
     Bulletin, BulletinSection, BulletinQuestion,
     BulletinDistribution, Vote, Protocol, ProtocolExtract, PPZSubmission,
@@ -20,12 +31,12 @@ from schemas.voting import (
     BulletinCreate, BulletinUpdate, BulletinRead,
     BulletinSectionCreate, BulletinSectionRead,
     BulletinQuestionCreate, BulletinQuestionRead,
-    BulletinDistributionUpdate, BulletinDistributionRead,
+    BulletinDistributionUpdate, BulletinDistributionRead, BulletinDistributionMemberRead,
     VoteCreate, VoteRead,
     ProtocolCreate, ProtocolUpdate, ProtocolRead,
     ProtocolExtractCreate, ProtocolExtractRead,
     PPZSubmissionCreate, PPZSubmissionRead,
-    DistributeRequest, QuestionResult, MonitoringEntry,
+    DistributeRequest, QuestionResult, MonitoringEntry, MonitoringSummary,
 )
 
 router = APIRouter()
@@ -145,7 +156,7 @@ def get_bulletin_full(bulletin_id: int, db: Session = Depends(get_db)):
 
 @router.get("/bulletins/{bulletin_id}/docx")
 def bulletin_docx(bulletin_id: int, db: Session = Depends(get_db)):
-    """DOCX-версия бюллетеня (для Word)."""
+    """DOCX-версия бюллетеня по организационному шаблону."""
     b = (
         db.query(Bulletin)
         .options(joinedload(Bulletin.sections).joinedload(BulletinSection.questions))
@@ -155,22 +166,31 @@ def bulletin_docx(bulletin_id: int, db: Session = Depends(get_db)):
     if not b:
         raise HTTPException(status_code=404, detail="Bulletin not found")
 
-    doc = Document()
-    doc.add_heading(f"Бюллетень голосования № {b.number}", level=1)
-    doc.add_paragraph(f"Период голосования: {b.voting_start or '—'} — {b.voting_end or '—'}")
-    doc.add_paragraph(f"Адрес: {b.postal_address or '—'}")
-
+    lines: list[str] = []
     sections = sorted(b.sections, key=lambda x: (x.section_order or 0, x.id))
-    if not sections:
-        doc.add_paragraph("Вопросы не добавлены.")
     for s in sections:
-        doc.add_heading(str(s.section_name or ""), level=2)
+        lines.append(str(s.section_name or ""))
         questions = sorted(s.questions, key=lambda q: (q.question_order or 0, q.id))
         for idx, q in enumerate(questions, 1):
-            doc.add_paragraph(f"{idx}. {q.question_text}", style="List Number")
+            lines.append(f"{idx}. {q.question_text}")
+    questions_text = "\n".join(lines) if lines else "Вопросы не добавлены."
 
+    mapping = {
+        "BULLETIN_NUMBER": str(b.number),
+        "BULLETIN_TYPE": b.bulletin_type.value if b.bulletin_type else "—",
+        "VOTING_START": str(b.voting_start or "—"),
+        "VOTING_END": str(b.voting_end or "—"),
+        "ADDRESS": str(b.postal_address or "—"),
+        "QUESTIONS": questions_text,
+    }
+    content = render_template(BULLETIN_TEMPLATE_PATH, "Бюллетень", mapping)
     filename = f"Бюллетень_{_safe_filename(str(b.number))}.docx"
-    return _docx_response(doc, filename)
+    headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 @router.put("/bulletins/{bulletin_id}", response_model=BulletinRead)
@@ -278,6 +298,29 @@ def distribute_bulletin(
     return created
 
 
+@router.get(
+    "/bulletins/{bulletin_id}/distributions",
+    response_model=List[BulletinDistributionMemberRead],
+)
+def list_bulletin_distributions(bulletin_id: int, db: Session = Depends(get_db)):
+    """Список рассылки бюллетеня с e-mail членов НК."""
+    _get_bulletin_or_404(db, bulletin_id)
+    dists = (
+        db.query(BulletinDistribution)
+        .options(joinedload(BulletinDistribution.member))
+        .filter(BulletinDistribution.bulletin_id == bulletin_id)
+        .order_by(BulletinDistribution.id)
+        .all()
+    )
+    out = []
+    for d in dists:
+        item = BulletinDistributionRead.model_validate(d).model_dump()
+        item["member_name"] = d.member.full_name if d.member else None
+        item["member_email"] = d.member.email if d.member else None
+        out.append(item)
+    return out
+
+
 @router.get("/bulletins/{bulletin_id}/distributions.csv")
 def export_distributions_csv(bulletin_id: int, db: Session = Depends(get_db)):
     """
@@ -375,6 +418,9 @@ def update_distribution(
     return obj
 
 
+VOTING_QUORUM_RATIO = 0.65
+
+
 @router.get("/bulletins/{bulletin_id}/monitoring", response_model=List[MonitoringEntry])
 def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
     _get_bulletin_or_404(db, bulletin_id)
@@ -396,6 +442,66 @@ def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
         )
         for d in dists
     ]
+
+
+@router.get("/bulletins/{bulletin_id}/monitoring-summary", response_model=MonitoringSummary)
+def monitoring_summary(bulletin_id: int, db: Session = Depends(get_db)):
+    """Мониторинг с кворумом 65 % действующих членов НК."""
+    _get_bulletin_or_404(db, bulletin_id)
+    dists = (
+        db.query(BulletinDistribution)
+        .options(joinedload(BulletinDistribution.member))
+        .filter(BulletinDistribution.bulletin_id == bulletin_id)
+        .all()
+    )
+    active = db.query(CommitteeMember).filter(CommitteeMember.is_active.is_(True)).count()
+    required = max(1, math.ceil(active * VOTING_QUORUM_RATIO)) if active else 1
+    received = sum(1 for d in dists if d.received)
+    entries = [
+        MonitoringEntry(
+            distribution_id=d.id,
+            member_id=d.member_id,
+            member_name=d.member.full_name if d.member else "",
+            sent=d.sent or False,
+            sent_date=d.sent_date,
+            received=d.received or False,
+            received_date=d.received_date,
+        )
+        for d in dists
+    ]
+    return MonitoringSummary(
+        active_members=active,
+        required_received=required,
+        received_count=received,
+        distributed_count=len(dists),
+        quorum_met=received >= required and len(dists) > 0,
+        entries=entries,
+    )
+
+
+@router.get("/bulletins/{bulletin_id}/monitoring.docx")
+def monitoring_docx(bulletin_id: int, db: Session = Depends(get_db)):
+    """DOCX-отчёт мониторинга ответов НК."""
+    bulletin = _get_bulletin_or_404(db, bulletin_id)
+    summary = monitoring_summary(bulletin_id, db)
+    lines = []
+    for e in summary.entries:
+        st = "получен" if e.received else ("отправлен" if e.sent else "не отправлен")
+        lines.append(f"{e.member_name}: {st}")
+    mapping = {
+        "BULLETIN_NUMBER": str(bulletin.number),
+        "REQUIRED": str(summary.required_received),
+        "RECEIVED": str(summary.received_count),
+        "MEMBERS_TABLE": "\n".join(lines) if lines else "—",
+    }
+    content = render_template(MONITORING_TEMPLATE_PATH, "Мониторинг", mapping)
+    filename = f"Мониторинг_Б{_safe_filename(str(bulletin.number))}.docx"
+    headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 # ── Votes ───────────────────────────────────────────────────────────────────
@@ -517,8 +623,12 @@ def delete_protocol(protocol_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/protocols/{protocol_id}/docx")
-def protocol_docx(protocol_id: int, db: Session = Depends(get_db)):
-    """DOCX-версия протокола с результатами голосования."""
+def protocol_docx(
+    protocol_id: int,
+    variant: str = Query("full", pattern="^(brief|full)$"),
+    db: Session = Depends(get_db),
+):
+    """DOCX-версия протокола (краткий или подробный шаблон)."""
     p = (
         db.query(Protocol)
         .options(joinedload(Protocol.bulletin))
@@ -529,34 +639,34 @@ def protocol_docx(protocol_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Protocol not found")
 
     results = vote_results(p.bulletin_id, db)
-
-    doc = Document()
-    doc.add_heading(f"Протокол № {p.number}", level=1)
-    doc.add_paragraph(f"Дата: {p.date or '—'}")
-    doc.add_paragraph(f"Бюллетень: {p.bulletin.number if p.bulletin else p.bulletin_id}")
-    doc.add_paragraph(f"Статус: {p.status.value if p.status else '—'}")
-    if p.details:
-        doc.add_paragraph(p.details)
-
-    doc.add_heading("Результаты голосования", level=2)
-    if not results:
-        doc.add_paragraph("Нет данных.")
-    else:
-        table = doc.add_table(rows=1, cols=4)
-        hdr = table.rows[0].cells
-        hdr[0].text = "Вопрос"
-        hdr[1].text = "За"
-        hdr[2].text = "Против"
-        hdr[3].text = "% За"
-        for r in results:
-            row = table.add_row().cells
-            row[0].text = str(r.question_text)
-            row[1].text = str(r.votes_for)
-            row[2].text = str(r.votes_against)
-            row[3].text = f"{r.percent_for:.1f}%"
-
-    filename = f"Протокол_{_safe_filename(str(p.number))}.docx"
-    return _docx_response(doc, filename)
+    summary_lines = [
+        f"{r.question_text}: {r.percent_for:.1f}% ({'принято' if r.passed else 'не принято'})"
+        for r in results
+    ]
+    table_lines = [
+        f"{r.question_text} | за: {r.votes_for} | против: {r.votes_against} | {r.percent_for:.1f}%"
+        for r in results
+    ]
+    mapping = {
+        "PROTOCOL_NUMBER": str(p.number),
+        "PROTOCOL_DATE": str(p.date or "—"),
+        "BULLETIN_NUMBER": str(p.bulletin.number if p.bulletin else p.bulletin_id),
+        "STATUS": p.status.value if p.status else "—",
+        "DETAILS": p.details or "—",
+        "RESULTS_SUMMARY": "\n".join(summary_lines) if summary_lines else "Нет данных",
+        "RESULTS_TABLE": "\n".join(table_lines) if table_lines else "Нет данных",
+    }
+    path = PROTOCOL_BRIEF_TEMPLATE_PATH if variant == "brief" else PROTOCOL_FULL_TEMPLATE_PATH
+    label = "Протокол (краткий)" if variant == "brief" else "Протокол (подробный)"
+    content = render_template(path, label, mapping)
+    suffix = "краткий" if variant == "brief" else "подробный"
+    filename = f"Протокол_{_safe_filename(str(p.number))}_{suffix}.docx"
+    headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 # ── Protocol Extracts ───────────────────────────────────────────────────────
@@ -612,19 +722,33 @@ def extract_docx(extract_id: int, db: Session = Depends(get_db)):
         .first()
     )
 
-    doc = Document()
-    doc.add_heading("Выписка из протокола", level=1)
-    doc.add_paragraph(f"Протокол: № {e.protocol.number if e.protocol else '—'} от {e.protocol.date if e.protocol else '—'}")
-    if la and la.laureate:
-        doc.add_paragraph(f"Лауреат: {la.laureate.full_name}")
-    if la and la.award:
-        doc.add_paragraph(f"Награда: {la.award.name}")
-    doc.add_paragraph(f"Дата выписки: {e.extract_date or '—'}")
-    if e.details:
-        doc.add_paragraph(e.details)
+    proto_num = str(e.protocol.number if e.protocol else "")
+    award_type = la.award.award_type.value if la and la.award and la.award.award_type else None
+    is_ppz = award_type == "ppz" or "-З" in proto_num.upper()
 
+    extract_no = proto_num
+    if is_ppz and proto_num and "-З" not in proto_num.upper():
+        extract_no = f"{proto_num}-З"
+
+    mapping = {
+        "EXTRACT_NUMBER": extract_no or "—",
+        "PROTOCOL_NUMBER": proto_num or "—",
+        "PROTOCOL_DATE": str(e.protocol.date if e.protocol else "—"),
+        "FULL_NAME": la.laureate.full_name if la and la.laureate else "—",
+        "AWARD_NAME": la.award.name if la and la.award else "—",
+        "EXTRACT_DATE": str(e.extract_date or "—"),
+        "DETAILS": e.details or "—",
+    }
+    path = EXTRACT_PPZ_TEMPLATE_PATH if is_ppz else EXTRACT_MEDAL_TEMPLATE_PATH
+    label = "Выписка (ППЗ)" if is_ppz else "Выписка (медаль)"
+    content = render_template(path, label, mapping)
     filename = f"Выписка_{_safe_filename(str(e.protocol.number if e.protocol else 'protocol'))}_{extract_id}.docx"
-    return _docx_response(doc, filename)
+    headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 # ── PPZ Submissions ─────────────────────────────────────────────────────────
@@ -674,18 +798,19 @@ def ppz_submission_docx(ppz_id: int, db: Session = Depends(get_db)):
         .first()
     )
 
-    doc = Document()
-    doc.add_heading("Представление на награждение (ППЗ)", level=1)
-    doc.add_paragraph(f"Номер: {obj.submission_number or '—'}")
-    doc.add_paragraph(f"Дата: {obj.date or '—'}")
-    if obj.authorized_member:
-        doc.add_paragraph(f"Уполномоченный: {obj.authorized_member.full_name}")
-    if la and la.laureate:
-        doc.add_paragraph(f"Лауреат: {la.laureate.full_name}")
-    if la and la.award:
-        doc.add_paragraph(f"Награда: {la.award.name}")
-    if obj.details:
-        doc.add_paragraph(obj.details)
-
+    mapping = {
+        "SUBMISSION_NUMBER": str(obj.submission_number or "—"),
+        "DATE": str(obj.date or "—"),
+        "AUTHORIZED": obj.authorized_member.full_name if obj.authorized_member else "—",
+        "FULL_NAME": la.laureate.full_name if la and la.laureate else "—",
+        "AWARD_NAME": la.award.name if la and la.award else "—",
+        "DETAILS": obj.details or "—",
+    }
+    content = render_template(PPZ_SUBMISSION_TEMPLATE_PATH, "Представление ППЗ", mapping)
     filename = f"ППЗ_{ppz_id}_{_safe_filename(la.laureate.full_name if la and la.laureate else 'laureate')}.docx"
-    return _docx_response(doc, filename)
+    headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )

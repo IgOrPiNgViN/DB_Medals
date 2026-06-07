@@ -308,20 +308,30 @@ class LaureateLifecyclePage(QWidget):
         ])
         self.stage_voting = StageWidget("2. Голосование", [
             ("bulletin_number", "Номер бюллетеня", "line"),
+            ("secretariat_date", "Секретариат (дата)", "line"),
         ])
         self.stage_decision = StageWidget("3. Решение", [
             ("protocol_number", "Номер протокола", "line"),
+            ("authorized_ppz", "Уполномоченный ППЗ", "line"),
         ])
         self.stage_registration = StageWidget("4. Оформление", [
             ("signer_id", "Подписант", "combo"),
             ("certificate_number", "Номер удостоверения", "line"),
+            ("extract_number", "№ выписки", "line"),
+            ("reg_protocol_number", "№ протокола (оформ.)", "line"),
+            ("pending_comment", "Отложено, не вручено (комм.)", "line"),
         ])
         self.stage_consent_pd = ConsentPDWidget(self.api)
         self.stage_ceremony = StageWidget("5. Вручение", [
             ("place", "Место вручения", "line"),
+            ("officiant", "Кто вручил", "line"),
+            ("kit_type", "Тип комплекта", "line"),
         ])
         self.stage_publication = StageWidget("6. Опубликование", [
             ("source", "Источник", "line"),
+            ("nk_link", "Ссылка НК", "line"),
+            ("smi_web", "Публикации в СМИ (web)", "line"),
+            ("smi_print", "Публикации (печать)", "line"),
         ])
 
         self._all_stages = [
@@ -351,7 +361,7 @@ class LaureateLifecyclePage(QWidget):
         self.btn_issue.clicked.connect(self._on_issue)
         btn_row.addWidget(self.btn_issue)
 
-        self.btn_certificate = QPushButton("Удостоверение (черновик)…")
+        self.btn_certificate = QPushButton("Удостоверение…")
         self.btn_certificate.setProperty("class", "btn-secondary")
         self.btn_certificate.setToolTip(
             "Печать или PDF по данным связки и этапа «Оформление» (шаблон ТЗ).",
@@ -371,12 +381,15 @@ class LaureateLifecyclePage(QWidget):
         self.status_label = QLabel()
         outer.addWidget(self.status_label)
 
-    def _load_signer_combo(self):
+    def _load_signer_combo(self, award_id: int | None = None):
         combo: QComboBox = self.stage_registration.extra_widgets["signer_id"]
         combo.clear()
         combo.addItem("— не выбран —", None)
         try:
-            members = self.api.get_committee_members(is_active=True)
+            if award_id is not None:
+                members = self.api.get_signers_for_award(award_id, role="signer")
+            else:
+                members = []
             for m in members:
                 label = m.get("full_name", f"#{m['id']}")
                 combo.addItem(label, m["id"])
@@ -387,6 +400,13 @@ class LaureateLifecyclePage(QWidget):
         self._laureate_award_id = laureate_award_id
         self.title_label.setText(f"Жизненный цикл — связка #{laureate_award_id}")
         self.stage_consent_pd.set_context(laureate_award_id)
+        award_id: int | None = None
+        try:
+            ctx = self.api.get_laureate_award_context(laureate_award_id)
+            award_id = ctx.get("award_id")
+        except APIError:
+            ctx = {}
+        self._load_signer_combo(award_id)
         try:
             data = self.api.get_laureate_lifecycle(laureate_award_id)
             self._lifecycle_exists = True
@@ -434,14 +454,21 @@ class LaureateLifecyclePage(QWidget):
         self.stage_voting.set_done(data.get("voting_done", False))
         self.stage_voting.set_date(data.get("voting_date"))
         self._set_extra_text(self.stage_voting, "bulletin_number", data.get("voting_bulletin_number"))
+        sec_date = data.get("voting_secretariat_date")
+        if sec_date:
+            self._set_extra_text(self.stage_voting, "secretariat_date", sec_date)
 
         self.stage_decision.set_done(data.get("decision_done", False))
         self.stage_decision.set_date(data.get("decision_date"))
         self._set_extra_text(self.stage_decision, "protocol_number", data.get("decision_protocol_number"))
+        self._set_extra_text(self.stage_decision, "authorized_ppz", data.get("decision_authorized_ppz"))
 
         self.stage_registration.set_done(data.get("registration_done", False))
         self.stage_registration.set_date(data.get("registration_date"))
         self._set_extra_text(self.stage_registration, "certificate_number", data.get("registration_certificate_number"))
+        self._set_extra_text(self.stage_registration, "extract_number", data.get("registration_extract_number"))
+        self._set_extra_text(self.stage_registration, "reg_protocol_number", data.get("registration_protocol_number"))
+        self._set_extra_text(self.stage_registration, "pending_comment", data.get("registration_pending_comment"))
         combo: QComboBox = self.stage_registration.extra_widgets["signer_id"]
         signer = data.get("registration_signer_id")
         if signer is not None:
@@ -453,10 +480,15 @@ class LaureateLifecyclePage(QWidget):
         self.stage_ceremony.set_done(data.get("ceremony_done", False))
         self.stage_ceremony.set_date(data.get("ceremony_date"))
         self._set_extra_text(self.stage_ceremony, "place", data.get("ceremony_place"))
+        self._set_extra_text(self.stage_ceremony, "officiant", data.get("ceremony_officiant"))
+        self._set_extra_text(self.stage_ceremony, "kit_type", data.get("ceremony_kit_type"))
 
         self.stage_publication.set_done(data.get("publication_done", False))
         self.stage_publication.set_date(data.get("publication_date"))
         self._set_extra_text(self.stage_publication, "source", data.get("publication_source"))
+        self._set_extra_text(self.stage_publication, "nk_link", data.get("publication_nk_link"))
+        self._set_extra_text(self.stage_publication, "smi_web", data.get("publication_smi_web_count"))
+        self._set_extra_text(self.stage_publication, "smi_print", data.get("publication_smi_print_count"))
 
         self.stage_consent_pd.set_values(
             data.get("consent_sent_date"),
@@ -531,16 +563,28 @@ class LaureateLifecyclePage(QWidget):
         data["voting_done"] = self.stage_voting.done_cb.isChecked()
         data["voting_date"] = self.stage_voting.get_date()
         data["voting_bulletin_number"] = self._get_extra_text(self.stage_voting, "bulletin_number")
+        sec = self._get_extra_text(self.stage_voting, "secretariat_date")
+        data["voting_secretariat_date"] = sec
+        data["voting_secretariat_done"] = bool(sec)
 
         data["decision_done"] = self.stage_decision.done_cb.isChecked()
         data["decision_date"] = self.stage_decision.get_date()
         data["decision_protocol_number"] = self._get_extra_text(self.stage_decision, "protocol_number")
+        data["decision_authorized_ppz"] = self._get_extra_text(self.stage_decision, "authorized_ppz")
 
         data["registration_done"] = self.stage_registration.done_cb.isChecked()
         data["registration_date"] = self.stage_registration.get_date()
         data["registration_certificate_number"] = self._get_extra_text(
             self.stage_registration, "certificate_number",
         )
+        data["registration_extract_number"] = self._get_extra_text(self.stage_registration, "extract_number")
+        data["registration_protocol_number"] = self._get_extra_text(
+            self.stage_registration, "reg_protocol_number",
+        )
+        data["registration_pending_comment"] = self._get_extra_text(
+            self.stage_registration, "pending_comment",
+        )
+        data["registration_pending_issue"] = bool(data.get("registration_pending_comment"))
         combo: QComboBox = self.stage_registration.extra_widgets["signer_id"]
         signer = combo.currentData()
         data["registration_signer_id"] = signer if signer else None
@@ -548,14 +592,32 @@ class LaureateLifecyclePage(QWidget):
         data["ceremony_done"] = self.stage_ceremony.done_cb.isChecked()
         data["ceremony_date"] = self.stage_ceremony.get_date()
         data["ceremony_place"] = self._get_extra_text(self.stage_ceremony, "place")
+        data["ceremony_officiant"] = self._get_extra_text(self.stage_ceremony, "officiant")
+        data["ceremony_kit_type"] = self._get_extra_text(self.stage_ceremony, "kit_type")
 
         data["publication_done"] = self.stage_publication.done_cb.isChecked()
         data["publication_date"] = self.stage_publication.get_date()
         data["publication_source"] = self._get_extra_text(self.stage_publication, "source")
+        data["publication_nk_link"] = self._get_extra_text(self.stage_publication, "nk_link")
+        data["publication_smi_web_count"] = self._parse_int_field(
+            self._get_extra_text(self.stage_publication, "smi_web"),
+        )
+        data["publication_smi_print_count"] = self._parse_int_field(
+            self._get_extra_text(self.stage_publication, "smi_print"),
+        )
 
         data.update(self.stage_consent_pd.get_values())
 
         return data
+
+    @staticmethod
+    def _parse_int_field(val: str | None) -> int | None:
+        if not val:
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
 
     @staticmethod
     def _get_extra_text(stage: StageWidget, key: str) -> str | None:
@@ -660,9 +722,27 @@ class LaureateLifecyclePage(QWidget):
         if self._laureate_award_id is None:
             return
         menu = QMenu(self)
-        menu.addAction("Печать", self._print_certificate)
+        menu.addAction("Word (DOCX)…", self._save_certificate_docx)
+        menu.addAction("Печать (черновик)", self._print_certificate)
         menu.addAction("Сохранить PDF…", self._pdf_certificate)
         menu.exec_(self.btn_certificate.mapToGlobal(self.btn_certificate.rect().bottomLeft()))
+
+    def _save_certificate_docx(self):
+        if self._laureate_award_id is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить удостоверение", "udostoverenie.docx",
+            "Word (*.docx)",
+        )
+        if not path:
+            return
+        try:
+            data = self.api.download_certificate_docx(self._laureate_award_id)
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Сохранено", f"Файл сохранён:\n{path}")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать DOCX:\n{e.detail}")
 
     def _print_certificate(self):
         html = self._build_certificate_html()

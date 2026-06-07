@@ -4,14 +4,29 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QDateEdit, QDialogButtonBox,
     QComboBox, QTextEdit, QGroupBox, QMessageBox, QCheckBox, QScrollArea, QFileDialog,
 )
-from PyQt5.QtCore import Qt, QDate, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QDate, pyqtSignal, QUrl
+from PyQt5.QtGui import QFont, QDesktopServices
+
+from urllib.parse import quote
 
 import html as html_module
 
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import export_html_for_word, export_html_to_pdf, print_html
+
+
+# Организации-инициаторы по ТЗ (раздел «Награждение лауреатов» бюллетеня)
+BULLETIN_INITIATOR_ORGS = [
+    "ЛУКОЙЛ",
+    "Газпром",
+    "Роснефть",
+    "РЖД",
+    "Ростех",
+    "Росатом",
+    "Сбербанк",
+    "ВТБ",
+]
 
 
 class CreateBulletinDialog(QDialog):
@@ -30,8 +45,12 @@ class CreateBulletinDialog(QDialog):
         self.end_date = QDateEdit(QDate.currentDate().addDays(14))
         self.end_date.setCalendarPopup(True)
         self.address_edit = QLineEdit()
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("Медали", "medal")
+        self.type_combo.addItem("ППЗ", "ppz")
 
         layout.addRow("Номер бюллетеня:", self.number_edit)
+        layout.addRow("Тип бюллетеня:", self.type_combo)
         layout.addRow("Дата начала:", self.start_date)
         layout.addRow("Дата окончания:", self.end_date)
         layout.addRow("Почтовый адрес:", self.address_edit)
@@ -44,8 +63,9 @@ class CreateBulletinDialog(QDialog):
     def get_data(self) -> dict:
         return {
             "number": self.number_edit.text().strip(),
-            "start_date": self.start_date.date().toString("yyyy-MM-dd"),
-            "end_date": self.end_date.date().toString("yyyy-MM-dd"),
+            "bulletin_type": self.type_combo.currentData(),
+            "voting_start": self.start_date.date().toString("yyyy-MM-dd"),
+            "voting_end": self.end_date.date().toString("yyyy-MM-dd"),
             "postal_address": self.address_edit.text().strip(),
         }
 
@@ -186,7 +206,7 @@ class BulletinPage(QWidget):
         self.laureate_combo = QComboBox()
         l_layout.addRow("Кандидат (связка):", self.laureate_combo)
         self.initiator_combo = QComboBox()
-        l_layout.addRow("Инициатор (член НК):", self.initiator_combo)
+        l_layout.addRow("Инициатор (организация):", self.initiator_combo)
         self.btn_save_laureate_q = QPushButton("Добавить вопрос в бюллетень")
         self.btn_save_laureate_q.clicked.connect(self._on_save_laureate_question)
         l_layout.addRow(self.btn_save_laureate_q)
@@ -230,6 +250,11 @@ class BulletinPage(QWidget):
         self.btn_export_dist_xlsx.setProperty("class", "btn-secondary")
         self.btn_export_dist_xlsx.clicked.connect(self._on_export_distribution_xlsx)
         btn_row.addWidget(self.btn_export_dist_xlsx)
+
+        self.btn_mailto = QPushButton("E-mail (mailto)…")
+        self.btn_mailto.setProperty("class", "btn-secondary")
+        self.btn_mailto.clicked.connect(self._on_mailto_distribution)
+        btn_row.addWidget(self.btn_mailto)
         btn_row.addStretch()
         sg_layout.addLayout(btn_row)
 
@@ -281,6 +306,25 @@ class BulletinPage(QWidget):
 
     def refresh_data(self):
         self.load_data()
+
+    def focus_bulletin_number(self, number: str):
+        """Выбор бюллетеня по номеру (из отчёта «Незав. ЖЦ»)."""
+        number = (number or "").strip()
+        if not number:
+            return
+        if not self._bulletins:
+            self.load_data()
+        for row in range(self.table.rowCount()):
+            it = self.table.item(row, 1)
+            if it and it.text().strip() == number:
+                self.table.selectRow(row)
+                self._on_bulletin_selected()
+                return
+        QMessageBox.information(
+            self,
+            "Бюллетень",
+            f"Бюллетень №{number} не найден. Создайте его в этом разделе.",
+        )
 
     # ── slots ────────────────────────────────────────────────────────────
 
@@ -367,14 +411,19 @@ class BulletinPage(QWidget):
         self.laureate_combo.clear()
         self.initiator_combo.clear()
         bn = self._current_bulletin_number()
-        if not bn:
-            self.laureate_section_hint.setText("Сначала выберите бюллетень в таблице.")
-            return
         self.laureate_section_hint.setText(
-            f"Номер бюллетеня «{bn}». Связки подтягиваются из карточек лауреатов (кнопка «Связать награду»).",
+            "Кандидаты на голосование — из незавершённого ЖЦ (этап «Голосование»). "
+            + (f"Номер бюллетеня «{bn}»." if bn else ""),
         )
+        rows: list = []
         try:
-            rows = self.api.get_laureate_awards_by_bulletin_number(bn)
+            rows = self.api.get_laureate_awards_for_voting()
+            if bn:
+                rows = [
+                    r for r in rows
+                    if (r.get("bulletin_number") or "").strip() == bn
+                    or not (r.get("bulletin_number") or "").strip()
+                ]
             for r in rows:
                 la_id = r.get("laureate_award_id")
                 if la_id is None:
@@ -383,15 +432,19 @@ class BulletinPage(QWidget):
                 an = r.get("award_name") or "—"
                 self.laureate_combo.addItem(f"{fn} — {an}", int(la_id))
             if self.laureate_combo.count() == 0:
-                self.laureate_combo.addItem("— нет связок с этим номером —", None)
+                self.laureate_combo.addItem("— нет кандидатов на голосовании —", None)
         except APIError:
             self.laureate_combo.addItem("— ошибка загрузки —", None)
-        try:
-            members = self.api.get_committee_members(is_active=True)
-            for m in members:
-                self.initiator_combo.addItem(m.get("full_name", f"ID {m['id']}"), m["id"])
-        except APIError:
-            pass
+
+        seen_orgs: set[str] = set()
+        for org in BULLETIN_INITIATOR_ORGS:
+            self.initiator_combo.addItem(org, org)
+            seen_orgs.add(org.lower())
+        for r in rows:
+            init = (r.get("initiator") or "").strip()
+            if init and init.lower() not in seen_orgs:
+                self.initiator_combo.addItem(init, init)
+                seen_orgs.add(init.lower())
 
     def _on_save_question(self):
         if self._current_bulletin_id is None:
@@ -694,3 +747,43 @@ class BulletinPage(QWidget):
             QMessageBox.information(self, "Экспорт", "XLSX сохранён.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось выгрузить XLSX:\n{e}")
+
+    def _on_mailto_distribution(self):
+        if self._current_bulletin_id is None:
+            QMessageBox.information(self, "E-mail", "Выберите бюллетень в таблице.")
+            return
+        try:
+            dists = self.api.list_bulletin_distributions(self._current_bulletin_id)
+        except APIError as e:
+            QMessageBox.critical(self, "E-mail", f"Не удалось загрузить рассылку:\n{e}")
+            return
+        emails = [
+            (d.get("member_email") or "").strip()
+            for d in dists
+            if (d.get("member_email") or "").strip()
+        ]
+        if not emails:
+            QMessageBox.warning(
+                self,
+                "E-mail",
+                "У членов НК в рассылке не указаны адреса e-mail.\n"
+                "Заполните поле «E-mail» в карточках членов НК.",
+            )
+            return
+        bn = self._current_bulletin_number() or str(self._current_bulletin_id)
+        subject = quote(f"Бюллетень НК № {bn}")
+        body = quote(
+            "Уважаемые члены Наградного комитета,\n\n"
+            f"направляем бюллетень № {bn} для голосования.\n\n"
+            "С уважением,"
+        )
+        bcc = quote(",".join(emails))
+        url = QUrl(f"mailto:?bcc={bcc}&subject={subject}&body={body}")
+        if not QDesktopServices.openUrl(url):
+            QMessageBox.warning(
+                self,
+                "E-mail",
+                "Не удалось открыть почтовый клиент. "
+                "Используйте экспорт CSV/XLSX или скопируйте адреса вручную:\n"
+                + ", ".join(emails),
+            )

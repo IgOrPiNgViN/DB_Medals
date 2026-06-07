@@ -17,6 +17,11 @@ class LaureateBase(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
+    birth_date: Optional[date] = None
+    passport: Optional[str] = None
+    inn: Optional[str] = None
+    snils: Optional[str] = None
+    regalia: Optional[str] = None
 
 
 class LaureateCreate(LaureateBase):
@@ -32,11 +37,17 @@ class LaureateUpdate(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
+    birth_date: Optional[date] = None
+    passport: Optional[str] = None
+    inn: Optional[str] = None
+    snils: Optional[str] = None
+    regalia: Optional[str] = None
 
 
 class LaureateRead(LaureateBase):
     id: int
     created_at: Optional[datetime] = None
+    has_photo: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,7 +63,8 @@ class LaureateAwardBase(BaseModel):
 
 
 class LaureateAwardCreate(LaureateAwardBase):
-    pass
+    """При привязке награды можно сразу указать номер бюллетеня (создаётся ЖЦ)."""
+    bulletin_number: Optional[str] = None
 
 
 class LaureateAwardRead(LaureateAwardBase):
@@ -70,19 +82,31 @@ class LaureateLifecycleBase(BaseModel):
     nomination_done: Optional[bool] = False
     voting_date: Optional[date] = None
     voting_bulletin_number: Optional[str] = None
+    voting_secretariat_done: Optional[bool] = False
+    voting_secretariat_date: Optional[date] = None
     voting_done: Optional[bool] = False
     decision_date: Optional[date] = None
     decision_protocol_number: Optional[str] = None
+    decision_authorized_ppz: Optional[str] = None
     decision_done: Optional[bool] = False
     registration_date: Optional[date] = None
     registration_signer_id: Optional[int] = None
     registration_certificate_number: Optional[str] = None
+    registration_extract_number: Optional[str] = None
+    registration_protocol_number: Optional[str] = None
+    registration_pending_issue: Optional[bool] = False
+    registration_pending_comment: Optional[str] = None
     registration_done: Optional[bool] = False
     ceremony_date: Optional[date] = None
     ceremony_place: Optional[str] = None
+    ceremony_officiant: Optional[str] = None
+    ceremony_kit_type: Optional[str] = None
     ceremony_done: Optional[bool] = False
     publication_date: Optional[date] = None
     publication_source: Optional[str] = None
+    publication_nk_link: Optional[str] = None
+    publication_smi_web_count: Optional[int] = 0
+    publication_smi_print_count: Optional[int] = 0
     publication_done: Optional[bool] = False
     inventory_reserved: Optional[bool] = False
     inventory_issued: Optional[bool] = False
@@ -101,19 +125,31 @@ class LaureateLifecycleUpdate(BaseModel):
     nomination_done: Optional[bool] = None
     voting_date: Optional[date] = None
     voting_bulletin_number: Optional[str] = None
+    voting_secretariat_done: Optional[bool] = None
+    voting_secretariat_date: Optional[date] = None
     voting_done: Optional[bool] = None
     decision_date: Optional[date] = None
     decision_protocol_number: Optional[str] = None
+    decision_authorized_ppz: Optional[str] = None
     decision_done: Optional[bool] = None
     registration_date: Optional[date] = None
     registration_signer_id: Optional[int] = None
     registration_certificate_number: Optional[str] = None
+    registration_extract_number: Optional[str] = None
+    registration_protocol_number: Optional[str] = None
+    registration_pending_issue: Optional[bool] = None
+    registration_pending_comment: Optional[str] = None
     registration_done: Optional[bool] = None
     ceremony_date: Optional[date] = None
     ceremony_place: Optional[str] = None
+    ceremony_officiant: Optional[str] = None
+    ceremony_kit_type: Optional[str] = None
     ceremony_done: Optional[bool] = None
     publication_date: Optional[date] = None
     publication_source: Optional[str] = None
+    publication_nk_link: Optional[str] = None
+    publication_smi_web_count: Optional[int] = None
+    publication_smi_print_count: Optional[int] = None
     publication_done: Optional[bool] = None
     inventory_reserved: Optional[bool] = None
     inventory_issued: Optional[bool] = None

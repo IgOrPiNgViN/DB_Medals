@@ -380,6 +380,121 @@ class TestProductions:
         assert r.status_code == 204
 
 
+class TestProductionStages:
+    def test_get_and_update_stages(self, client):
+        award = _create_award(client)
+        r = client.get(f"/api/awards/{award['id']}/production-stages")
+        assert r.status_code == 200
+        data = r.json()
+        assert "components" in data
+        assert len(data["components"]) >= 1
+        comp = data["components"][0]
+        assert len(comp["stages"]) == 10
+
+        r2 = client.put(
+            f"/api/awards/{award['id']}/production-stages",
+            json={
+                "component_type": comp["component_type"],
+                "is_ready": True,
+                "stages": [
+                    {
+                        "stage_key": "order",
+                        "status": "заказано",
+                        "stage_date": "2024-01-15",
+                        "attachment_note": "договор №1",
+                    },
+                ],
+            },
+        )
+        assert r2.status_code == 200
+        assert r2.json()["is_ready"] is True
+        order_stage = next(s for s in r2.json()["stages"] if s["stage_key"] == "order")
+        assert order_stage["status"] == "заказано"
+
+    def test_production_stage_attachment(self, client):
+        award = _create_award(client)
+        stages = client.get(f"/api/awards/{award['id']}/production-stages").json()
+        comp = stages["components"][0]["component_type"]
+        r = client.post(
+            f"/api/awards/{award['id']}/production-stages/{comp}/order/attachments",
+            files={"file": ("spec.pdf", b"%PDF-1.4 test", "application/pdf")},
+        )
+        assert r.status_code == 201
+        att_id = r.json()["id"]
+        lst = client.get(
+            f"/api/awards/{award['id']}/production-stages/{comp}/order/attachments",
+        )
+        assert lst.status_code == 200
+        assert len(lst.json()) == 1
+        dl = client.get(f"/api/awards/production-stage-attachments/{att_id}")
+        assert dl.status_code == 200
+        assert dl.content.startswith(b"%PDF")
+        assert client.delete(f"/api/awards/production-stage-attachments/{att_id}").status_code == 204
+
+    def test_laureate_kit_disposal_deducts_stock(self, client, db):
+        award = _create_award(client, name="Выбытие лауреату")
+        from models.award import AwardKitStock
+
+        db.add(AwardKitStock(award_id=award["id"], physical_sets=3, free_sets=3))
+        db.flush()
+        r = client.post(
+            f"/api/awards/{award['id']}/kit-disposals",
+            json={"target": "laureate", "laureate_award_id": 1, "quantity": 1},
+        )
+        assert r.status_code == 201
+        st = client.get(f"/api/awards/{award['id']}/inventory/kit-status").json()
+        assert st["free_sets"] == 2
+
+
+class TestApprovalsUpdateDelete:
+    def test_update_approval(self, client):
+        award = _create_award(client)
+        created = client.post(
+            f"/api/awards/{award['id']}/approvals",
+            json={"award_id": award["id"], "approval_type": "nk", "status": "draft"},
+        ).json()
+        r = client.put(
+            f"/api/awards/approvals/{created['id']}",
+            json={"status": "approved", "details": "OK"},
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+
+    def test_delete_approval(self, client):
+        award = _create_award(client)
+        created = client.post(
+            f"/api/awards/{award['id']}/approvals",
+            json={"award_id": award["id"], "approval_type": "nk"},
+        ).json()
+        r = client.delete(f"/api/awards/approvals/{created['id']}")
+        assert r.status_code == 204
+
+
+class TestKitDisposals:
+    def test_create_other_kit_disposal(self, client, db):
+        award = _create_award(client, name="Комплектная медаль")
+        from models.award import AwardKitStock
+
+        db.add(AwardKitStock(award_id=award["id"], physical_sets=5, free_sets=5))
+        db.flush()
+
+        r = client.post(
+            f"/api/awards/{award['id']}/kit-disposals",
+            json={"target": "other", "quantity": 2, "reason": "брак"},
+        )
+        assert r.status_code == 201
+        lst = client.get(f"/api/awards/{award['id']}/kit-disposals")
+        assert lst.status_code == 200
+        assert len(lst.json()) == 1
+
+    def test_kit_disposals_journal(self, client):
+        r = client.get("/api/reports/kit-disposals-journal")
+        assert r.status_code == 200
+        body = r.json()
+        assert "laureate_disposals" in body
+        assert "other_disposals" in body
+
+
 # ── Inventory ─────────────────────────────────────────────────────────────────
 
 class TestInventory:

@@ -207,10 +207,12 @@ class _AwardCatalogCard(QFrame):
         has_image: bool = False,
         has_image_back: bool = False,
         catalog_gen: int = 0,
+        page: "AwardsCardsPage | None" = None,
         parent=None,
     ):
         super().__init__(parent)
         self._award_id = award_id
+        self._page = page
         self._api = api
         self._has_image = has_image
         self._has_image_back = has_image_back
@@ -283,9 +285,42 @@ class _AwardCatalogCard(QFrame):
                     )
         self._img.setPixmap(pm)
 
-    def mouseReleaseEvent(self, event):
+    def set_selected(self, selected: bool) -> None:
+        if selected:
+            self.setStyleSheet(
+                """
+                QFrame#AwardCatalogCard {
+                    background: #ffffff;
+                    border: 2px solid #2196F3;
+                    border-radius: 10px;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet(
+                """
+                QFrame#AwardCatalogCard {
+                    background: #ffffff;
+                    border: 1px solid #c5cdd8;
+                    border-radius: 10px;
+                }
+                QFrame#AwardCatalogCard:hover {
+                    border-color: #2196F3;
+                }
+                """
+            )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._page is not None:
+            self._page.select_catalog_card(self._award_id)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.clicked_id.emit(self._award_id)
+        super().mouseDoubleClickEvent(event)
+
+    def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
 
 
@@ -305,6 +340,8 @@ class AwardsCardsPage(QWidget):
         self._catalog_scroll: QScrollArea | None = None
         self._refresh_gen = 0
         self._catalog_gen = 0
+        self._selected_catalog_id: int | None = None
+        self._catalog_cards: dict[int, _AwardCatalogCard] = {}
         self._last_applied_ids: tuple[int, ...] | None = None
         self._build_ui()
 
@@ -472,6 +509,8 @@ class AwardsCardsPage(QWidget):
         _CatalogThumbLoader.clear()
         self._catalog_gen += 1
         catalog_gen = self._catalog_gen
+        self._catalog_cards.clear()
+        self._selected_catalog_id = None
         while self._catalog_grid.count():
             item = self._catalog_grid.takeAt(0)
             w = item.widget()
@@ -501,9 +540,11 @@ class AwardsCardsPage(QWidget):
                 has_image=has_img,
                 has_image_back=has_img_back,
                 catalog_gen=catalog_gen,
+                page=self,
                 parent=self._catalog_inner,
             )
             card.clicked_id.connect(self.award_selected.emit)
+            self._catalog_cards[aid] = card
             r, c = divmod(i, cols)
             self._catalog_grid.addWidget(card, r, c)
 
@@ -512,6 +553,11 @@ class AwardsCardsPage(QWidget):
             self._catalog_inner.updateGeometry()
         if self._catalog_scroll is not None:
             self._catalog_scroll.updateGeometry()
+
+    def select_catalog_card(self, award_id: int) -> None:
+        self._selected_catalog_id = int(award_id)
+        for aid, card in self._catalog_cards.items():
+            card.set_selected(aid == self._selected_catalog_id)
 
     def _sync_stack_to_view(self):
         mode = self.view_combo.currentData()
@@ -572,14 +618,38 @@ class AwardsCardsPage(QWidget):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось создать награду.\n{e}")
 
     def _on_delete(self):
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            QMessageBox.information(self, "Удаление", "Выберите награду для удаления.")
-            return
+        mode = self.view_combo.currentData() or "catalog"
+        award_id_text = ""
+        name = ""
 
-        row = rows[0].row()
-        name = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
-        award_id_text = self.table.item(row, 0).text() if self.table.item(row, 0) else ""
+        if mode == "catalog" and self._selected_catalog_id is not None:
+            award_id_text = str(self._selected_catalog_id)
+            card = self._catalog_cards.get(self._selected_catalog_id)
+            if card is not None:
+                for lbl in card.findChildren(QLabel):
+                    if lbl.wordWrap():
+                        name = lbl.text()
+                        break
+        else:
+            rows = self.table.selectionModel().selectedRows()
+            if not rows:
+                QMessageBox.information(
+                    self,
+                    "Удаление",
+                    "Выберите награду в каталоге (один щелчок) или в таблице.",
+                )
+                return
+            row = rows[0].row()
+            name = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+            award_id_text = self.table.item(row, 0).text() if self.table.item(row, 0) else ""
+
+        if not award_id_text:
+            QMessageBox.information(
+                self,
+                "Удаление",
+                "Выберите награду в каталоге (один щелчок) или в таблице.",
+            )
+            return
 
         answer = QMessageBox.question(
             self,

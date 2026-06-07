@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QMessageBox, QDialog, QDialogButtonBox, QTextEdit,
+    QMessageBox, QDialog, QDialogButtonBox, QTextEdit, QFileDialog, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
@@ -105,6 +105,16 @@ class ProtocolPage(QWidget):
         self.btn_pdf.setProperty("class", "btn-secondary")
         self.btn_pdf.clicked.connect(self._on_pdf)
         bottom.addWidget(self.btn_pdf)
+
+        self.btn_docx = QPushButton("Word (DOCX)…")
+        self.btn_docx.setProperty("class", "btn-secondary")
+        self.btn_docx.clicked.connect(self._on_docx)
+        bottom.addWidget(self.btn_docx)
+
+        self.protocol_variant = QComboBox()
+        self.protocol_variant.addItem("Подробный протокол", "full")
+        self.protocol_variant.addItem("Краткий протокол", "brief")
+        bottom.addWidget(self.protocol_variant)
 
         self.btn_refresh = QPushButton("Обновить")
         self.btn_refresh.clicked.connect(self.refresh_data)
@@ -241,3 +251,26 @@ class ProtocolPage(QWidget):
 
     def _on_pdf(self):
         pdf_table(self.table, "Протоколы", self, "protocols.pdf")
+
+    def _on_docx(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "DOCX", "Выберите протокол в таблице.")
+            return
+        it = self.table.item(rows[0].row(), 0)
+        pid = it.data(Qt.UserRole) if it else None
+        if pid is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить протокол", "protocol.docx", "Word (*.docx)",
+        )
+        if not path:
+            return
+        try:
+            variant = self.protocol_variant.currentData() or "full"
+            data = self.api.download_protocol_docx(int(pid), variant=str(variant))
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Сохранено", f"Файл сохранён:\n{path}")
+        except APIError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить DOCX:\n{e.detail}")
