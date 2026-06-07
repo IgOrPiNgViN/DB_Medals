@@ -1,12 +1,17 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QLabel, QFrame, QPushButton, QStatusBar,
-    QScrollArea, QSizePolicy,
+    QScrollArea, QSizePolicy, QButtonGroup, QProgressBar,
 )
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QFont, QIcon
 
 from api_client import APIClient, APIError
+
+from ui.fetch_worker import activity as fetch_activity, run_api_fetch, thread_api_call
+from ui.laureates_cache import LaureatesCache
+from ui.awards_cache import AwardsCache
+from ui.app_cache import AppCache
 
 from ui.awards.awards_cards import AwardsCardsPage
 from ui.awards.award_detail import AwardDetailPage
@@ -95,12 +100,115 @@ class MainWindow(QMainWindow):
         self._center_on_screen()
 
         self._page_buttons: list[SidebarButton] = []
+        self._nav_button_group = QButtonGroup(self)
+        self._nav_button_group.setExclusive(True)
         self._pages: dict[str, int] = {}
         self._award_widgets: dict[str, QWidget] = {}
+        self._nav_generation = 0
+        self._pages_loaded: set[str] = set()
+        self._awaiting_preload: dict[str, QWidget] = {}
+        self._warm_queue: list[str] = []
+        self._warm_pass = 0
 
         self._build_ui()
+        self._load_cache_and_preload()
         self._build_status_bar()
         self._start_health_timer()
+
+    _PAGE_TO_CACHE = {
+        "laureate_cards": "laureates",
+        "awards_laureates": "awards_laureates",
+        "incomplete_lifecycle": "incomplete_lifecycle",
+        "lifecycle_stages_report": "lifecycle_by_stage",
+        "statistics": "statistics_all",
+        "award_cards": "awards_all",
+        "current_awards_report": "awards_all",
+        "award_lifecycle": "award_lifecycle",
+        "warehouse": "warehouse",
+        "committee_list": "committee_members",
+    }
+
+    _AWARD_PRELOAD_MAP = {
+        "awards_all": ("award_cards", "current_awards_report"),
+        "award_lifecycle": ("award_lifecycle",),
+        "warehouse": ("warehouse",),
+    }
+
+    _APP_PRELOAD_MAP = {
+        "committee_members": ("committee_list",),
+    }
+
+    _WARMABLE_PAGE_KEYS = (
+        "award_cards",
+        "award_lifecycle",
+        "warehouse",
+        "current_awards_report",
+        "laureate_cards",
+        "awards_laureates",
+        "incomplete_lifecycle",
+        "lifecycle_stages_report",
+        "statistics",
+        "committee_list",
+    )
+
+    def _load_cache_and_preload(self) -> None:
+        """Кэш с диска — в фоне, затем preload разделов «Награды» и «Лауреаты»."""
+        LaureatesCache.mark_preload_start({
+            "laureates",
+            "awards_laureates",
+            "incomplete_lifecycle",
+            "lifecycle_by_stage",
+            "statistics_all",
+        })
+        AwardsCache.mark_preload_start({
+            "awards_all",
+            "award_lifecycle",
+            "warehouse",
+        })
+        AppCache.mark_preload_start({"committee_members"})
+
+        def load_disk():
+            LaureatesCache.load_from_disk()
+            AwardsCache.load_from_disk()
+            AppCache.load_from_disk()
+            return True
+
+        run_api_fetch(
+            load_disk,
+            on_success=lambda _ok: self._on_disk_cache_ready(),
+            on_error=lambda _err: self._on_disk_cache_ready(),
+        )
+
+    def _on_disk_cache_ready(self) -> None:
+        """Кэш с диска готов — сразу прогреть UI, параллельно обновить данные с сервера."""
+        AwardsCache.preload_missing_images()
+        self._schedule_warm_pages()
+        self._start_laureates_preload()
+        self._start_awards_preload()
+        self._start_app_preload()
+
+    def _start_app_preload(self) -> None:
+        jobs = [
+            ("committee_members", lambda api: api.get_committee_members(is_active=None)),
+        ]
+        for name, fetch in jobs:
+            run_api_fetch(
+                lambda f=fetch: thread_api_call(f),
+                on_success=lambda data, n=name: self._on_app_preload_ok(n, data),
+                on_error=lambda _err, n=name: self._on_app_preload_error(n),
+            )
+
+    def _on_app_preload_error(self, name: str) -> None:
+        AppCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name, app=True)
+        self._check_all_preload_done()
+
+    def _on_app_preload_ok(self, name: str, data) -> None:
+        if name == "committee_members":
+            AppCache.set_committee_members(data)
+        AppCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name, app=True)
+        self._check_all_preload_done()
 
     # ── geometry ────────────────────────────────────────────────────────
 
@@ -134,6 +242,169 @@ class MainWindow(QMainWindow):
 
         if self._page_buttons:
             self._select_page(self._page_buttons[0].page_key)
+
+    _LAUREATE_PAGE_KEYS = (
+        "laureate_cards",
+        "awards_laureates",
+        "incomplete_lifecycle",
+        "lifecycle_stages_report",
+        "statistics",
+    )
+
+    _LAUREATE_PRELOAD_MAP = {
+        "laureates": "laureate_cards",
+        "awards_laureates": "awards_laureates",
+        "incomplete_lifecycle": "incomplete_lifecycle",
+        "lifecycle_by_stage": "lifecycle_stages_report",
+        "statistics_all": "statistics",
+    }
+
+    def _start_awards_preload(self) -> None:
+        """Фоновое обновление кэша раздела «Награды» при старте."""
+        jobs = [
+            ("awards_all", lambda api: api.get_awards()),
+            ("award_lifecycle", lambda api: api.get_award_lifecycle_report()),
+            ("warehouse", lambda api: api.get_warehouse_report()),
+        ]
+        for name, fetch in jobs:
+            run_api_fetch(
+                lambda f=fetch: thread_api_call(f),
+                on_success=lambda data, n=name: self._on_awards_preload_ok(n, data),
+                on_error=lambda _err, n=name: self._on_awards_preload_error(n),
+            )
+
+    def _on_awards_preload_error(self, name: str) -> None:
+        AwardsCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name, awards=True)
+        self._check_all_preload_done()
+
+    def _on_awards_preload_ok(self, name: str, data) -> None:
+        if name == "awards_all":
+            AwardsCache.set_awards_all(data or [])
+            AwardsCache.preload_missing_images(data or [])
+        elif name == "award_lifecycle":
+            AwardsCache.set_award_lifecycle(data)
+        elif name == "warehouse":
+            AwardsCache.set_warehouse(data)
+        AwardsCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name, awards=True)
+        self._check_all_preload_done()
+
+    def _start_laureates_preload(self) -> None:
+        """Фоновое обновление кэша раздела «Лауреаты» при старте."""
+        jobs = [
+            ("laureates", lambda api: api.get_laureates()),
+            ("awards_laureates", lambda api: api.report_awards_laureates()),
+            ("incomplete_lifecycle", lambda api: api.report_incomplete_lifecycle()),
+            ("lifecycle_by_stage", lambda api: api.report_lifecycle_by_stage()),
+            ("statistics_all", lambda api: api.report_statistics(from_date=None, to_date=None)),
+        ]
+        for name, fetch in jobs:
+            run_api_fetch(
+                lambda f=fetch: thread_api_call(f),
+                on_success=lambda data, n=name: self._on_laureate_preload_ok(n, data),
+                on_error=lambda _err, n=name: self._on_laureate_preload_error(n),
+            )
+
+    def _on_laureate_preload_error(self, name: str) -> None:
+        LaureatesCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name)
+        self._check_all_preload_done()
+
+    def _on_laureate_preload_ok(self, name: str, data) -> None:
+        if name == "laureates":
+            LaureatesCache.set_laureates(data)
+        elif name == "awards_laureates":
+            LaureatesCache.set_awards_laureates(data)
+        elif name == "incomplete_lifecycle":
+            LaureatesCache.set_incomplete_lifecycle(data)
+        elif name == "lifecycle_by_stage":
+            LaureatesCache.set_lifecycle_by_stage(data)
+        elif name == "statistics_all":
+            if isinstance(data, dict):
+                LaureatesCache.set_statistics_all(data.get("by_category") or [])
+            else:
+                LaureatesCache.set_statistics_all(data or [])
+
+        LaureatesCache.mark_preload_done(name)
+        self._finish_awaiting_preload(name)
+        self._check_all_preload_done()
+
+    def _finish_awaiting_preload(
+        self,
+        cache_name: str,
+        *,
+        awards: bool = False,
+        app: bool = False,
+    ) -> None:
+        if app:
+            page_keys = self._APP_PRELOAD_MAP.get(cache_name, ())
+        elif awards:
+            page_keys = self._AWARD_PRELOAD_MAP.get(cache_name, ())
+        else:
+            page_key = self._LAUREATE_PRELOAD_MAP.get(cache_name)
+            page_keys = (page_key,) if page_key else ()
+
+        for page_key in page_keys:
+            if page_key is None:
+                continue
+            waiting = self._awaiting_preload.pop(page_key, None)
+            if waiting is not None:
+                self._warm_page(page_key, widget=waiting)
+                continue
+            if page_key in self._pages_loaded:
+                continue
+            idx = self._pages.get(page_key)
+            if idx is None or self.stack.currentIndex() != idx:
+                continue
+            widget = self.stack.widget(idx)
+            if widget is not None:
+                self._warm_page(page_key, widget=widget)
+
+    def _all_preload_done(self) -> bool:
+        return (
+            not LaureatesCache.preload_pending
+            and not AwardsCache.preload_pending
+            and not AppCache.preload_pending
+        )
+
+    def _check_all_preload_done(self) -> None:
+        if not self._all_preload_done():
+            return
+        AwardsCache.preload_missing_images()
+        self._schedule_warm_pages()
+
+    def _warm_page(self, page_key: str, widget: QWidget | None = None) -> bool:
+        if widget is None:
+            idx = self._pages.get(page_key)
+            if idx is None:
+                return False
+            widget = self.stack.widget(idx)
+        if widget is None:
+            return False
+        apply_fn = getattr(widget, "apply_from_cache_only", None)
+        if callable(apply_fn) and apply_fn():
+            self._pages_loaded.add(page_key)
+            return True
+        return False
+
+    def _schedule_warm_pages(self, page_keys: tuple[str, ...] | None = None) -> None:
+        """Порциями заполнить все страницы из кэша (не блокируя UI)."""
+        keys = list(page_keys or self._WARMABLE_PAGE_KEYS)
+        self._warm_queue = keys
+        self._warm_pass += 1
+        warm_pass = self._warm_pass
+        QTimer.singleShot(0, lambda: self._warm_next_page(warm_pass))
+
+    def _warm_next_page(self, warm_pass: int) -> None:
+        if warm_pass != self._warm_pass or not self._warm_queue:
+            if warm_pass == self._warm_pass:
+                self._warm_queue = []
+            return
+        page_key = self._warm_queue.pop(0)
+        self._warm_page(page_key)
+        if self._warm_queue and warm_pass == self._warm_pass:
+            QTimer.singleShot(0, lambda: self._warm_next_page(warm_pass))
 
     # ── sidebar ---------------------------------------------------------
 
@@ -184,6 +455,7 @@ class MainWindow(QMainWindow):
                 self._nav_layout.addWidget(header)
             else:
                 btn = SidebarButton(label_text, page_key)
+                self._nav_button_group.addButton(btn)
                 btn.clicked.connect(lambda checked, k=page_key: self._select_page(k))
                 self._nav_layout.addWidget(btn)
                 self._page_buttons.append(btn)
@@ -381,10 +653,23 @@ class MainWindow(QMainWindow):
     def _refresh_page_widget(self, widget: QWidget | None) -> None:
         if widget is None:
             return
-        if hasattr(widget, "refresh_data"):
-            widget.refresh_data()
-        elif hasattr(widget, "load_data"):
-            widget.load_data()
+        for method_name in ("refresh_data", "load_data", "refresh"):
+            method = getattr(widget, method_name, None)
+            if callable(method):
+                method()
+                return
+
+    def _sync_sidebar_checks(self) -> None:
+        idx = self.stack.currentIndex()
+        active_key = None
+        for key, page_idx in self._pages.items():
+            if page_idx == idx:
+                active_key = key
+                break
+        self._nav_button_group.blockSignals(True)
+        for btn in self._page_buttons:
+            btn.setChecked(btn.page_key == active_key)
+        self._nav_button_group.blockSignals(False)
 
     def _refresh_pages(self, *page_keys: str) -> None:
         for key in page_keys:
@@ -403,17 +688,62 @@ class MainWindow(QMainWindow):
         )
 
     def _select_page(self, page_key: str):
-        # Guard: do not lose unsaved changes when navigating via sidebar.
         if not self._maybe_confirm_unsaved_on_leave():
+            self._sync_sidebar_checks()
             return
 
         idx = self._pages.get(page_key)
         if idx is None:
             return
+
+        self._nav_generation += 1
+        generation = self._nav_generation
+
         self.stack.setCurrentIndex(idx)
+        self._nav_button_group.blockSignals(True)
         for btn in self._page_buttons:
             btn.setChecked(btn.page_key == page_key)
-        self._refresh_page_widget(self.stack.widget(idx))
+        self._nav_button_group.blockSignals(False)
+
+        widget = self.stack.widget(idx)
+        QTimer.singleShot(
+            0,
+            lambda w=widget, g=generation, k=page_key: self._deferred_page_refresh(w, g, k),
+        )
+
+    def _deferred_page_refresh(self, widget: QWidget | None, generation: int, page_key: str) -> None:
+        if generation != self._nav_generation:
+            return
+        if page_key in self._pages_loaded:
+            return
+        if widget is None:
+            return
+
+        apply_fn = getattr(widget, "apply_from_cache_only", None)
+        if callable(apply_fn) and apply_fn():
+            self._pages_loaded.add(page_key)
+            return
+
+        cache_key = self._PAGE_TO_CACHE.get(page_key)
+        if cache_key and (
+            cache_key in LaureatesCache.preload_pending
+            or cache_key in AwardsCache.preload_pending
+            or cache_key in AppCache.preload_pending
+        ):
+            self._awaiting_preload[page_key] = widget
+            self._show_page_loading_hint(widget)
+            return
+
+        self._refresh_page_widget(widget)
+        self._pages_loaded.add(page_key)
+
+    @staticmethod
+    def _show_page_loading_hint(widget: QWidget) -> None:
+        for attr in ("status_label", "count_label", "total_label"):
+            lbl = getattr(widget, attr, None)
+            if lbl is not None and hasattr(lbl, "setText"):
+                lbl.setText("Загрузка данных…")
+                return
 
     # ── placeholder pages ------------------------------------------------
 
@@ -439,11 +769,35 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
 
+        self._loading_label = QLabel("Загрузка данных…")
+        self._loading_label.setProperty("class", "status-label")
+        self._loading_label.hide()
+
+        self._loading_bar = QProgressBar()
+        self._loading_bar.setFixedWidth(140)
+        self._loading_bar.setFixedHeight(14)
+        self._loading_bar.setTextVisible(False)
+        self._loading_bar.setRange(0, 0)
+        self._loading_bar.hide()
+
         self._conn_label = QLabel()
         self._conn_label.setProperty("class", "status-label")
+
+        self._status_bar.addPermanentWidget(self._loading_label)
+        self._status_bar.addPermanentWidget(self._loading_bar)
         self._status_bar.addPermanentWidget(self._conn_label)
 
+        fetch_activity.changed.connect(self._on_fetch_activity)
         self._set_connection_status(False)
+
+    def _on_fetch_activity(self, count: int) -> None:
+        loading = count > 0
+        self._loading_bar.setVisible(loading)
+        self._loading_label.setVisible(loading)
+        if loading:
+            self._loading_label.setText(
+                f"Загрузка данных… ({count})" if count > 1 else "Загрузка данных…",
+            )
 
     def _set_connection_status(self, connected: bool):
         if connected:
@@ -462,11 +816,16 @@ class MainWindow(QMainWindow):
         self._check_health()
 
     def _check_health(self):
-        try:
-            resp = self.api.health_check()
+        def fetch():
+            return thread_api_call(lambda api: api.health_check())
+
+        def on_ok(resp):
             self._set_connection_status(resp.get("status") == "ok")
-        except Exception:
+
+        def on_err(_err):
             self._set_connection_status(False)
+
+        run_api_fetch(fetch, on_success=on_ok, on_error=on_err)
 
     # ── cleanup ----------------------------------------------------------
 

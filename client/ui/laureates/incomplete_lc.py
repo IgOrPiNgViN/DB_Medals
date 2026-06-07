@@ -9,6 +9,9 @@ from PyQt5.QtGui import QColor, QBrush
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.laureates_cache import LaureatesCache
+from ui.table_fill import fill_table_batched, enable_table_sort_on_click
 
 STAGE_LABELS = {
     "nomination": "Выдвижение",
@@ -26,6 +29,10 @@ GREEN = QColor("#4CAF50")
 RED = QColor("#EF5350")
 GREEN_BG = QColor("#E8F5E9")
 RED_BG = QColor("#FFEBEE")
+GREEN_BRUSH = QBrush(GREEN)
+RED_BRUSH = QBrush(RED)
+GREEN_BG_BRUSH = QBrush(GREEN_BG)
+RED_BG_BRUSH = QBrush(RED_BG)
 
 
 class IncompleteLCPage(QWidget):
@@ -35,8 +42,9 @@ class IncompleteLCPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._report_data: list = []
+        self._refresh_gen = 0
+        self._fill_gen = 0
         self._build_ui()
-        self.refresh_data()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -90,8 +98,7 @@ class IncompleteLCPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        enable_table_sort_on_click(self.table)
         layout.addWidget(self.table)
 
         vote_section = QHBoxLayout()
@@ -106,12 +113,44 @@ class IncompleteLCPage(QWidget):
         self.status_label = QLabel()
         layout.addWidget(self.status_label)
 
+    def apply_from_cache_only(self) -> bool:
+        if LaureatesCache.incomplete_lifecycle is None:
+            return False
+        self._report_data = LaureatesCache.incomplete_lifecycle
+        self._apply_filter()
+        return True
+
     def refresh_data(self):
-        try:
-            self._report_data = self.api.report_incomplete_lifecycle()
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{e.detail}")
-            self._report_data = []
+        if LaureatesCache.incomplete_lifecycle is not None and not self._report_data:
+            self._report_data = LaureatesCache.incomplete_lifecycle
+            self._apply_filter()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+
+        def fetch():
+            return thread_api_call(lambda api: api.report_incomplete_lifecycle())
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda data: self._on_report_loaded(data, gen),
+            on_error=lambda err: self._on_refresh_error(err, gen),
+        )
+
+    def _on_report_loaded(self, data, gen: int):
+        if gen != self._refresh_gen:
+            return
+        LaureatesCache.set_incomplete_lifecycle(data)
+        self._report_data = data or []
+        self._apply_filter()
+
+    def _on_refresh_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{err}")
+        self._report_data = []
         self._apply_filter()
 
     def _apply_filter(self):
@@ -124,14 +163,15 @@ class IncompleteLCPage(QWidget):
                 or r.get("reason") == "lifecycle not created"
             ]
 
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(filtered))
-        vote_count = 0
-        for row_idx, r in enumerate(filtered):
+        self._fill_gen += 1
+        fill_gen = self._fill_gen
+        rows = list(filtered)
+
+        def fill_row(table, row_idx, r):
             la_id = r.get("laureate_award_id", "")
-            self.table.setItem(row_idx, 0, NumericSortTableItem(str(la_id), la_id))
-            self.table.setItem(row_idx, 1, self._make_item(r.get("laureate_name", "")))
-            self.table.setItem(row_idx, 2, self._make_item(r.get("award_name", "")))
+            table.setItem(row_idx, 0, NumericSortTableItem(str(la_id), la_id))
+            table.setItem(row_idx, 1, self._make_item(r.get("laureate_name", "")))
+            table.setItem(row_idx, 2, self._make_item(r.get("award_name", "")))
 
             incomplete = r.get("incomplete_stages", [])
             reason = r.get("reason", "")
@@ -139,43 +179,55 @@ class IncompleteLCPage(QWidget):
             if reason == "lifecycle not created":
                 for col, _ in enumerate(ALL_STAGES):
                     item = QTableWidgetItem("—")
-                    item.setBackground(QBrush(RED_BG))
-                    item.setForeground(QBrush(RED))
+                    item.setBackground(RED_BG_BRUSH)
+                    item.setForeground(RED_BRUSH)
                     item.setTextAlignment(Qt.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                    self.table.setItem(row_idx, 3 + col, item)
+                    table.setItem(row_idx, 3 + col, item)
                 reason_item = self._make_item("ЖЦ не создан")
-                reason_item.setForeground(QBrush(RED))
-                self.table.setItem(row_idx, 3 + len(ALL_STAGES), reason_item)
-                vote_count += 1
+                reason_item.setForeground(RED_BRUSH)
+                table.setItem(row_idx, 3 + len(ALL_STAGES), reason_item)
             else:
                 for col, stage_key in enumerate(ALL_STAGES):
                     is_incomplete = stage_key in incomplete
                     if is_incomplete:
                         item = QTableWidgetItem("✗")
-                        item.setBackground(QBrush(RED_BG))
-                        item.setForeground(QBrush(RED))
+                        item.setBackground(RED_BG_BRUSH)
+                        item.setForeground(RED_BRUSH)
                     else:
                         item = QTableWidgetItem("✓")
-                        item.setBackground(QBrush(GREEN_BG))
-                        item.setForeground(QBrush(GREEN))
+                        item.setBackground(GREEN_BG_BRUSH)
+                        item.setForeground(GREEN_BRUSH)
                     item.setTextAlignment(Qt.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                    self.table.setItem(row_idx, 3 + col, item)
-
-                if "voting" in incomplete:
-                    vote_count += 1
-
-                self.table.setItem(
+                    table.setItem(row_idx, 3 + col, item)
+                table.setItem(
                     row_idx, 3 + len(ALL_STAGES),
                     self._make_item(", ".join(
                         STAGE_LABELS.get(s, s) for s in incomplete
                     )),
                 )
 
-        self.table.setSortingEnabled(True)
-        self.vote_count_label.setText(str(vote_count))
-        self.status_label.setText(f"Строк: {len(filtered)}")
+        def done():
+            if fill_gen != self._fill_gen:
+                return
+            vote_count = 0
+            for r in rows:
+                incomplete = r.get("incomplete_stages", [])
+                reason = r.get("reason", "")
+                if reason == "lifecycle not created" or "voting" in incomplete:
+                    vote_count += 1
+            self.vote_count_label.setText(str(vote_count))
+            self.status_label.setText(f"Строк: {len(rows)}")
+
+        fill_table_batched(
+            self.table,
+            rows,
+            fill_row,
+            batch_size=25,
+            on_done=done,
+            is_cancelled=lambda: fill_gen != self._fill_gen,
+        )
 
     @staticmethod
     def _make_item(text: str) -> QTableWidgetItem:

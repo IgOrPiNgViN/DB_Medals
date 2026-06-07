@@ -18,6 +18,8 @@ from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from api_client import APIClient, APIError
+from ui.awards_cache import AwardsCache
+from ui.fetch_worker import run_api_fetch, thread_api_call
 
 AWARD_TYPE_FILTER = [
     ("Все", None),
@@ -49,11 +51,13 @@ class CurrentAwardsReportPage(QWidget):
         self.filter_combo.setMinimumWidth(200)
         for label, _ in AWARD_TYPE_FILTER:
             self.filter_combo.addItem(label)
-        self.filter_combo.currentIndexChanged.connect(self.refresh_data)
+        self.filter_combo.currentIndexChanged.connect(
+            lambda: self.refresh_data(force_network=False),
+        )
         toolbar.addWidget(self.filter_combo)
 
         btn_refresh = QPushButton("Обновить")
-        btn_refresh.clicked.connect(self.refresh_data)
+        btn_refresh.clicked.connect(lambda: self.refresh_data(force_network=True))
         toolbar.addWidget(btn_refresh)
 
         toolbar.addStretch()
@@ -83,18 +87,24 @@ class CurrentAwardsReportPage(QWidget):
         hint.setProperty("class", "page-hint")
         layout.addWidget(hint)
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.refresh_data()
-
-    def refresh_data(self):
+    def apply_from_cache_only(self) -> bool:
         _, type_value = AWARD_TYPE_FILTER[self.filter_combo.currentIndex()]
-        try:
-            awards = self.api.get_awards(award_type=type_value)
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить награды.\n{e.detail}")
-            awards = []
+        cached = AwardsCache.filter_awards(type_value)
+        if cached is None:
+            return False
+        self._render_awards(cached)
+        return True
 
+    def refresh_data(self, force_network: bool = False):
+        _, type_value = AWARD_TYPE_FILTER[self.filter_combo.currentIndex()]
+        cached = AwardsCache.filter_awards(type_value)
+        if cached is not None:
+            self._render_awards(cached)
+            if not force_network:
+                return
+        self._fetch_from_network()
+
+    def _render_awards(self, awards: list) -> None:
         awards = sorted(awards, key=lambda a: (a.get("name") or "").lower())
         today = QDate.currentDate().toString("dd.MM.yyyy")
         self.title_label.setText(f"Отчёт: об актуальных наградах {today}")
@@ -109,6 +119,24 @@ class CurrentAwardsReportPage(QWidget):
             parts.append(f"<li>{html.escape(name)}</li>")
         parts.append("</ol></body></html>")
         self.text.setHtml("".join(parts))
+
+    def _fetch_from_network(self) -> None:
+        _, type_value = AWARD_TYPE_FILTER[self.filter_combo.currentIndex()]
+
+        def fetch():
+            return thread_api_call(lambda api: api.get_awards(award_type=type_value))
+
+        def on_ok(awards):
+            awards = awards or []
+            if not type_value:
+                AwardsCache.set_awards_all(awards)
+            self._render_awards(awards)
+
+        def on_err(err):
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить награды.\n{err}")
+            self._render_awards([])
+
+        run_api_fetch(fetch, on_success=on_ok, on_error=on_err)
 
     def _on_print(self):
         printer = QPrinter(QPrinter.HighResolution)

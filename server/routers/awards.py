@@ -9,7 +9,7 @@ from models.award import (
     AwardDevelopment, AwardApproval, AwardProduction, InventoryItem, AwardType,
 )
 from schemas.award import (
-    AwardCreate, AwardUpdate, AwardRead, AwardListItem,
+    AwardCreate, AwardUpdate, AwardRead, AwardDetailRead, AwardListItem,
     AwardCharacteristicCreate, AwardCharacteristicRead,
     AwardEstablishmentCreate, AwardEstablishmentRead,
     AwardDevelopmentCreate, AwardDevelopmentRead,
@@ -109,6 +109,29 @@ def _award_side_has_image(blob: bytes | bytearray | memoryview | None) -> bool:
     return _image_magic_at(nb, 0)
 
 
+def _award_to_read(award: Award) -> AwardRead:
+    return AwardRead(
+        id=award.id,
+        name=award.name,
+        award_type=award.award_type,
+        description=award.description,
+        created_at=award.created_at,
+        has_image=_award_side_has_image(award.image_front),
+        has_image_back=_award_side_has_image(award.image_back),
+        has_establishment=award.establishment is not None,
+        has_development=award.development is not None,
+    )
+
+
+def _award_to_detail(award: Award) -> AwardDetailRead:
+    base = _award_to_read(award)
+    return AwardDetailRead(
+        **base.model_dump(),
+        establishment=award.establishment,
+        development=award.development,
+    )
+
+
 def _get_award_or_404(db: Session, award_id: int) -> Award:
     award = db.query(Award).filter(Award.id == award_id).first()
     if not award:
@@ -152,7 +175,7 @@ def create_award(payload: AwardCreate, db: Session = Depends(get_db)):
     db.add(award)
     db.commit()
     db.refresh(award)
-    return award
+    return _award_to_read(award)
 
 
 # ── Reports (до /{award_id}, иначе «lifecycle» и «warehouse» попадают в int → 422) ──
@@ -341,9 +364,20 @@ def get_award_image(
     return Response(content=payload, media_type=_guess_image_mime(payload))
 
 
-@router.get("/{award_id}", response_model=AwardRead)
+@router.get("/{award_id}", response_model=AwardDetailRead)
 def get_award(award_id: int, db: Session = Depends(get_db)):
-    return _get_award_or_404(db, award_id)
+    award = (
+        db.query(Award)
+        .options(
+            joinedload(Award.establishment),
+            joinedload(Award.development),
+        )
+        .filter(Award.id == award_id)
+        .first()
+    )
+    if not award:
+        raise HTTPException(status_code=404, detail="Award not found")
+    return _award_to_detail(award)
 
 
 @router.put("/{award_id}", response_model=AwardRead)
@@ -353,7 +387,7 @@ def update_award(award_id: int, payload: AwardUpdate, db: Session = Depends(get_
         setattr(award, key, value)
     db.commit()
     db.refresh(award)
-    return award
+    return _award_to_read(award)
 
 
 @router.delete("/{award_id}", status_code=status.HTTP_204_NO_CONTENT)

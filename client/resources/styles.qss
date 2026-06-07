@@ -314,6 +314,19 @@ QLabel[class="status-label"] {
     padding: 2px 8px;
 }
 
+QStatusBar QProgressBar {
+    border: 1px solid #c5cdd8;
+    border-radius: 4px;
+    background: #eef1f5;
+    min-height: 12px;
+    max-height: 12px;
+}
+
+QStatusBar QProgressBar::chunk {
+    background-color: #2196F3;
+    border-radius: 3px;
+}
+
 /* ── Tab widget ──────────────────────────────────────────────────── */
 
 QTabWidget::pane {

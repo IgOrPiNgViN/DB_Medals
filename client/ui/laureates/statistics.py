@@ -9,6 +9,9 @@ from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.laureates_cache import LaureatesCache
+from ui.table_fill import enable_table_sort_on_click
 
 CATEGORY_DISPLAY = {
     "employee": "Сотрудники",
@@ -89,8 +92,27 @@ class StatisticsPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._stats: list = []
+        self._load_gen = 0
         self._build_ui()
-        self._on_preset_changed()
+        self._update_period_fields()
+
+    def _on_period_changed(self, _button=None):
+        self._update_period_fields()
+        self._load_data()
+
+    def _update_period_fields(self):
+        today = QDate.currentDate()
+        checked = self.btn_group.checkedId()
+        custom = (checked == 3)
+        self.date_from.setEnabled(custom)
+        self.date_to.setEnabled(custom)
+
+        if checked == 1:
+            self.date_from.setDate(QDate(today.year(), 1, 1))
+            self.date_to.setDate(today)
+        elif checked == 2:
+            self.date_from.setDate(QDate(today.year(), today.month(), 1))
+            self.date_to.setDate(today)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -115,7 +137,7 @@ class StatisticsPage(QWidget):
         self.btn_group.addButton(self.rb_custom, 3)
         for rb in (self.rb_all, self.rb_year, self.rb_month, self.rb_custom):
             period_layout.addWidget(rb)
-        self.btn_group.buttonClicked.connect(self._on_preset_changed)
+        self.btn_group.buttonClicked.connect(self._on_period_changed)
 
         period_layout.addWidget(QLabel("С:"))
         self.date_from = QDateEdit()
@@ -159,8 +181,7 @@ class StatisticsPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setMaximumWidth(400)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        enable_table_sort_on_click(self.table)
         mid.addWidget(self.table)
 
         self.chart = BarChartWidget()
@@ -172,23 +193,30 @@ class StatisticsPage(QWidget):
         self.total_label.setProperty("class", "section-title")
         layout.addWidget(self.total_label)
 
-    def _on_preset_changed(self):
-        today = QDate.currentDate()
-        checked = self.btn_group.checkedId()
-        custom = (checked == 3)
-        self.date_from.setEnabled(custom)
-        self.date_to.setEnabled(custom)
-
-        if checked == 1:
-            self.date_from.setDate(QDate(today.year(), 1, 1))
-            self.date_to.setDate(today)
-        elif checked == 2:
-            self.date_from.setDate(QDate(today.year(), today.month(), 1))
-            self.date_to.setDate(today)
-
+    def refresh_data(self):
         self._load_data()
 
+    def load_data(self):
+        self._load_data()
+
+    def apply_from_cache_only(self) -> bool:
+        if self.btn_group.checkedId() != 0:
+            return False
+        if LaureatesCache.statistics_all is None:
+            return False
+        self._stats = list(LaureatesCache.statistics_all)
+        self._fill_table()
+        return True
+
     def _load_data(self):
+        if self.btn_group.checkedId() == 0 and LaureatesCache.statistics_all is not None and not self._stats:
+            self._stats = list(LaureatesCache.statistics_all)
+            self._fill_table()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._load_gen += 1
+        gen = self._load_gen
         checked = self.btn_group.checkedId()
         from_date = None
         to_date = None
@@ -196,19 +224,33 @@ class StatisticsPage(QWidget):
             from_date = self.date_from.date().toPyDate()
             to_date = self.date_to.date().toPyDate()
 
-        try:
-            raw = self.api.report_statistics(from_date=from_date, to_date=to_date)
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить статистику:\n{e.detail}")
-            self._stats = []
-            self._fill_table()
-            return
+        def fetch():
+            return thread_api_call(
+                lambda api: api.report_statistics(from_date=from_date, to_date=to_date),
+            )
 
+        run_api_fetch(
+            fetch,
+            on_success=lambda raw: self._on_stats_loaded(raw, gen, checked),
+            on_error=lambda err: self._on_load_error(err, gen),
+        )
+
+    def _on_stats_loaded(self, raw, gen: int, checked: int):
+        if gen != self._load_gen:
+            return
         if isinstance(raw, dict):
             self._stats = raw.get("by_category") or []
         else:
             self._stats = raw or []
+        if checked == 0:
+            LaureatesCache.set_statistics_all(self._stats)
+        self._fill_table()
 
+    def _on_load_error(self, err: str, gen: int):
+        if gen != self._load_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить статистику:\n{err}")
+        self._stats = []
         self._fill_table()
 
     def _fill_table(self):
@@ -237,7 +279,6 @@ class StatisticsPage(QWidget):
 
         self.chart.set_data(chart_data)
         self.total_label.setText(f"Всего лауреатов: {total}")
-        self.table.setSortingEnabled(True)
 
     @staticmethod
     def _make_item(text: str) -> QTableWidgetItem:

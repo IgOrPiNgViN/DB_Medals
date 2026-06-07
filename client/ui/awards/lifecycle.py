@@ -10,6 +10,8 @@ from api_client import APIClient, APIError
 from ui.tab_helpers import configure_tab_bar_no_clip
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.awards_cache import AwardsCache
 
 AWARD_TABS = [
     ("Медали", "Медали"),
@@ -39,6 +41,7 @@ class LifecyclePage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._data: list[dict] = []
+        self._refresh_gen = 0
         self._build_ui()
 
     def _build_ui(self):
@@ -99,16 +102,45 @@ class LifecyclePage(QWidget):
 
     # ── data ─────────────────────────────────────────────────────────
 
+    def apply_from_cache_only(self) -> bool:
+        if AwardsCache.award_lifecycle is None:
+            return False
+        self._data = list(AwardsCache.award_lifecycle)
+        self._populate_tables()
+        return True
+
     def refresh(self):
-        try:
-            self._data = self.api.get_award_lifecycle_report()
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт.\n{e}")
+        if AwardsCache.award_lifecycle is not None and not self._data:
+            self._data = list(AwardsCache.award_lifecycle)
+            self._populate_tables()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+
+        def fetch():
+            return thread_api_call(lambda api: api.get_award_lifecycle_report())
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda data: self._on_data_loaded(data, gen),
+            on_error=lambda err: self._on_refresh_error(err, gen),
+        )
+
+    def _on_data_loaded(self, data, gen: int):
+        if gen != self._refresh_gen:
             return
+        AwardsCache.set_award_lifecycle(data)
+        self._data = data or []
         self._populate_tables()
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def _on_refresh_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт.\n{err}")
+
+    def refresh_data(self):
         self.refresh()
 
     def _populate_tables(self):

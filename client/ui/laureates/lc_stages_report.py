@@ -18,6 +18,9 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.laureates_cache import LaureatesCache
+from ui.table_fill import fill_table_batched, enable_table_sort_on_click
 
 STAGE_LABELS = {
     "nomination": "1. Выдвижение",
@@ -39,8 +42,9 @@ class LifecycleStagesReportPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._raw: dict = {}
+        self._refresh_gen = 0
+        self._fill_gen = 0
         self._build_ui()
-        self.refresh_data()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -100,23 +104,23 @@ class LifecycleStagesReportPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        enable_table_sort_on_click(self.table)
         layout.addWidget(self.table, 1)
 
-    def refresh_data(self):
-        try:
-            self._raw = self.api.report_lifecycle_by_stage()
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{e.detail}")
-            self._raw = {}
+    def apply_from_cache_only(self) -> bool:
+        if LaureatesCache.lifecycle_by_stage is None:
+            return False
+        self._raw = LaureatesCache.lifecycle_by_stage
+        self._rebuild_stage_combo()
+        self._apply_filter()
+        return True
 
+    def _rebuild_stage_combo(self) -> None:
         self.stage_combo.blockSignals(True)
         self.stage_combo.clear()
         self.stage_combo.addItem("Все этапы", "")
         counts = self._raw.get("counts") or {}
-        order = list(STAGE_LABELS.keys())
-        for key in order:
+        for key in STAGE_LABELS:
             if key not in counts:
                 continue
             label = STAGE_LABELS[key]
@@ -124,6 +128,40 @@ class LifecycleStagesReportPage(QWidget):
             self.stage_combo.addItem(f"{label} ({n})", key)
         self.stage_combo.blockSignals(False)
         self.stage_combo.setCurrentIndex(0)
+
+    def refresh_data(self):
+        if LaureatesCache.lifecycle_by_stage is not None and not self._raw:
+            self._raw = LaureatesCache.lifecycle_by_stage
+            self._rebuild_stage_combo()
+            self._apply_filter()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+
+        def fetch():
+            return thread_api_call(lambda api: api.report_lifecycle_by_stage())
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda data: self._on_report_loaded(data, gen),
+            on_error=lambda err: self._on_refresh_error(err, gen),
+        )
+
+    def _on_report_loaded(self, data, gen: int):
+        if gen != self._refresh_gen:
+            return
+        LaureatesCache.set_lifecycle_by_stage(data)
+        self._raw = data or {}
+        self._rebuild_stage_combo()
+        self._apply_filter()
+
+    def _on_refresh_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{err}")
+        self._raw = {}
         self._apply_filter()
 
     def _apply_filter(self):
@@ -143,16 +181,24 @@ class LifecycleStagesReportPage(QWidget):
                 f"На этапе «{STAGE_LABELS.get(key, key)}»: {len(rows)}",
             )
 
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
+        self._fill_gen += 1
+        fill_gen = self._fill_gen
+
+        def fill_row(table, i, r):
             st = r.get("_stage", "")
             la_id = r.get("laureate_award_id", "")
-            self.table.setItem(i, 0, NumericSortTableItem(str(la_id), la_id))
-            self.table.setItem(i, 1, self._item(r.get("laureate_name", "")))
-            self.table.setItem(i, 2, self._item(r.get("award_name", "")))
-            self.table.setItem(i, 3, self._item(STAGE_LABELS.get(st, st)))
-        self.table.setSortingEnabled(True)
+            table.setItem(i, 0, NumericSortTableItem(str(la_id), la_id))
+            table.setItem(i, 1, self._item(r.get("laureate_name", "")))
+            table.setItem(i, 2, self._item(r.get("award_name", "")))
+            table.setItem(i, 3, self._item(STAGE_LABELS.get(st, st)))
+
+        fill_table_batched(
+            self.table,
+            rows,
+            fill_row,
+            batch_size=40,
+            is_cancelled=lambda: fill_gen != self._fill_gen,
+        )
 
     @staticmethod
     def _item(text: str) -> QTableWidgetItem:

@@ -60,7 +60,14 @@ class TestAwardCRUD:
         award = _create_award(client, name="Проверочная медаль")
         r = client.get(f"/api/awards/{award['id']}")
         assert r.status_code == 200
-        assert r.json()["name"] == "Проверочная медаль"
+        body = r.json()
+        assert body["name"] == "Проверочная медаль"
+        assert body["has_image"] is False
+        assert body["has_image_back"] is False
+        assert body["has_establishment"] is False
+        assert body["has_development"] is False
+        assert body["establishment"] is None
+        assert body["development"] is None
 
     def test_get_award_not_found(self, client):
         r = client.get("/api/awards/999999")

@@ -9,6 +9,9 @@ from PyQt5.QtGui import QColor
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.print_helpers import print_table, pdf_table
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.table_fill import fill_table_batched, enable_table_sort_on_click
+from ui.laureates_cache import LaureatesCache
 
 CATEGORY_DISPLAY = {
     "employee": "Сотрудники",
@@ -27,8 +30,9 @@ class AwardsLaureatesPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._report_data: list = []
+        self._refresh_gen = 0
+        self._fill_gen = 0
         self._build_ui()
-        self.refresh_data()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -81,20 +85,21 @@ class AwardsLaureatesPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._on_double_click)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        enable_table_sort_on_click(self.table)
         layout.addWidget(self.table)
 
         self.status_label = QLabel()
         layout.addWidget(self.status_label)
 
-    def refresh_data(self):
-        try:
-            self._report_data = self.api.report_awards_laureates()
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{e.detail}")
-            self._report_data = []
+    def apply_from_cache_only(self) -> bool:
+        if LaureatesCache.awards_laureates is None:
+            return False
+        self._report_data = LaureatesCache.awards_laureates
+        self._rebuild_award_filter()
+        self._apply_filter()
+        return True
 
+    def _rebuild_award_filter(self) -> None:
         award_types = set()
         for award_group in self._report_data:
             at = award_group.get("award_type")
@@ -110,39 +115,75 @@ class AwardsLaureatesPage(QWidget):
         self.award_filter.setCurrentIndex(max(idx, 0))
         self.award_filter.blockSignals(False)
 
+    def refresh_data(self):
+        if LaureatesCache.awards_laureates is not None and not self._report_data:
+            self._report_data = LaureatesCache.awards_laureates
+            self._rebuild_award_filter()
+            self._apply_filter()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+
+        def fetch():
+            return thread_api_call(lambda api: api.report_awards_laureates())
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda data: self._on_report_loaded(data, gen),
+            on_error=lambda err: self._on_refresh_error(err, gen),
+        )
+
+    def _on_report_loaded(self, data, gen: int):
+        if gen != self._refresh_gen:
+            return
+        LaureatesCache.set_awards_laureates(data)
+        self._report_data = data or []
+        self._rebuild_award_filter()
+        self._apply_filter()
+
+    def _on_refresh_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить отчёт:\n{err}")
+        self._report_data = []
         self._apply_filter()
 
     def _apply_filter(self):
         type_filter = self.award_filter.currentData()
-        rows = []
-        for award_group in self._report_data:
-            if type_filter and award_group.get("award_type") != type_filter:
-                continue
-            award_name = award_group.get("award_name", "")
-            award_type = award_group.get("award_type", "")
-            for lau in award_group.get("laureates", []):
-                rows.append({
-                    "la_id": lau.get("laureate_award_id", ""),
-                    "award_name": award_name,
-                    "award_type": award_type,
-                    "full_name": lau.get("full_name", ""),
-                    "category": lau.get("category", ""),
-                    "assigned_date": lau.get("assigned_date", ""),
-                })
+        flat = LaureatesCache.awards_laureates_flat
+        if flat is None:
+            flat = LaureatesCache.flatten_awards_laureates(self._report_data)
+        rows = flat if not type_filter else [
+            r for r in flat if r.get("award_type") == type_filter
+        ]
 
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            self.table.setItem(i, 0, NumericSortTableItem(str(r["la_id"]), r["la_id"]))
-            self.table.setItem(i, 1, self._make_item(r["award_name"]))
-            self.table.setItem(i, 2, self._make_item(r["award_type"]))
-            self.table.setItem(i, 3, self._make_item(r["full_name"]))
+        self._fill_gen += 1
+        fill_gen = self._fill_gen
+
+        def fill_row(table, row, r):
+            table.setItem(row, 0, NumericSortTableItem(str(r["la_id"]), r["la_id"]))
+            table.setItem(row, 1, self._make_item(r["award_name"]))
+            table.setItem(row, 2, self._make_item(r["award_type"]))
+            table.setItem(row, 3, self._make_item(r["full_name"]))
             cat = r["category"]
-            self.table.setItem(i, 4, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
-            self.table.setItem(i, 5, self._make_item(str(r["assigned_date"] or "")))
-        self.table.setSortingEnabled(True)
+            table.setItem(row, 4, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
+            table.setItem(row, 5, self._make_item(str(r["assigned_date"] or "")))
 
-        self.status_label.setText(f"Строк: {len(rows)}")
+        def done():
+            if fill_gen != self._fill_gen:
+                return
+            self.status_label.setText(f"Строк: {len(rows)}")
+
+        fill_table_batched(
+            self.table,
+            rows,
+            fill_row,
+            batch_size=40,
+            on_done=done,
+            is_cancelled=lambda: fill_gen != self._fill_gen,
+        )
 
     @staticmethod
     def _make_item(text: str) -> QTableWidgetItem:

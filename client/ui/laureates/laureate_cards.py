@@ -7,6 +7,9 @@ from PyQt5.QtCore import pyqtSignal, Qt, QDate
 
 from api_client import APIError
 from ui.numeric_sort_item import NumericSortTableItem
+from ui.fetch_worker import run_api_fetch, thread_api_call
+from ui.table_fill import fill_table_batched, enable_table_sort_on_click
+from ui.laureates_cache import LaureatesCache
 
 CATEGORIES = [
     ("", "Все"),
@@ -195,8 +198,9 @@ class LaureateCardsPage(QWidget):
         super().__init__(parent)
         self.api = api_client
         self._laureates: list = []
+        self._refresh_gen = 0
+        self._fill_gen = 0
         self._build_ui()
-        self.refresh_data()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -259,23 +263,66 @@ class LaureateCardsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.verticalHeader().setVisible(False)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        enable_table_sort_on_click(self.table)
         layout.addWidget(self.table)
 
         self.status_label = QLabel()
         layout.addWidget(self.status_label)
 
-    def refresh_data(self):
+    def apply_from_cache_only(self) -> bool:
         cat = self.category_filter.currentData() if hasattr(self, "category_filter") else None
-        try:
-            self._laureates = self.api.get_laureates(category=cat or None)
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить лауреатов:\n{e.detail}")
-            self._laureates = []
+        cached = LaureatesCache.filter_laureates(cat or None)
+        if cached is None:
+            return False
+        self._laureates = cached
+        self._apply_filter()
+        return True
+
+    def refresh_data(self):
+        cached = LaureatesCache.filter_laureates(
+            self.category_filter.currentData() if hasattr(self, "category_filter") else None,
+        )
+        if cached is not None:
+            self._laureates = cached
+            self._apply_filter()
+        self._fetch_from_network()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+        cat = self.category_filter.currentData() if hasattr(self, "category_filter") else None
+
+        def fetch():
+            return thread_api_call(lambda api: api.get_laureates(category=cat or None))
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda laureates: self._on_laureates_loaded(laureates, cat, gen),
+            on_error=lambda err: self._on_refresh_error(err, gen),
+        )
+
+    def _on_laureates_loaded(self, laureates, cat, gen: int):
+        if gen != self._refresh_gen:
+            return
+        if not cat:
+            LaureatesCache.set_laureates(laureates)
+        self._laureates = laureates or []
+        self._apply_filter()
+
+    def _on_refresh_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить лауреатов:\n{err}")
+        self._laureates = []
         self._apply_filter()
 
     def _on_category_changed(self):
+        cat = self.category_filter.currentData() if hasattr(self, "category_filter") else None
+        cached = LaureatesCache.filter_laureates(cat or None)
+        if cached is not None:
+            self._laureates = cached
+            self._apply_filter()
+            return
         self.refresh_data()
 
     def _apply_filter(self):
@@ -288,23 +335,37 @@ class LaureateCardsPage(QWidget):
                 or text in (l.get("organization") or "").lower()
             ]
 
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(filtered))
-        for row, l in enumerate(filtered):
-            self.table.setItem(
+        total = len(self._laureates)
+        self._fill_gen += 1
+        fill_gen = self._fill_gen
+        rows = list(filtered)
+
+        def fill_row(table, row, l):
+            table.setItem(
                 row, 0, NumericSortTableItem(str(l.get("id", "")), l.get("id")),
             )
-            self.table.setItem(row, 1, self._make_item(l.get("full_name", "")))
+            table.setItem(row, 1, self._make_item(l.get("full_name", "")))
             cat = l.get("category")
-            self.table.setItem(row, 2, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
-            self.table.setItem(row, 3, self._make_item(l.get("organization", "") or ""))
+            table.setItem(row, 2, self._make_item(CATEGORY_DISPLAY.get(cat, cat or "")))
+            table.setItem(row, 3, self._make_item(l.get("organization", "") or ""))
             created = l.get("created_at", "")
             if created and "T" in str(created):
                 created = str(created).split("T")[0]
-            self.table.setItem(row, 4, self._make_item(str(created or "")))
-        self.table.setSortingEnabled(True)
+            table.setItem(row, 4, self._make_item(str(created or "")))
 
-        self.status_label.setText(f"Всего: {len(filtered)} из {len(self._laureates)}")
+        def done():
+            if fill_gen != self._fill_gen:
+                return
+            self.status_label.setText(f"Всего: {len(rows)} из {total}")
+
+        fill_table_batched(
+            self.table,
+            rows,
+            fill_row,
+            batch_size=40,
+            on_done=done,
+            is_cancelled=lambda: fill_gen != self._fill_gen,
+        )
 
     @staticmethod
     def _make_item(text: str) -> QTableWidgetItem:

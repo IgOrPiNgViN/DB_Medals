@@ -9,6 +9,8 @@ from PyQt5.QtGui import QColor, QFont
 from api_client import APIError
 from ui.print_helpers import print_table, pdf_table
 from ui.numeric_sort_item import NumericSortTableItem
+from ui.app_cache import AppCache
+from ui.fetch_worker import run_api_fetch, thread_api_call
 
 
 class CreateMemberDialog(QDialog):
@@ -72,8 +74,8 @@ class CommitteeListPage(QWidget):
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
         self.api = api_client
+        self._refresh_gen = 0
         self._build_ui()
-        self.load_data()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -141,16 +143,58 @@ class CommitteeListPage(QWidget):
 
     # ── data loading ─────────────────────────────────────────────────────
 
-    def load_data(self):
+    def apply_from_cache_only(self) -> bool:
+        if AppCache.committee_members is None:
+            return False
         filter_text = self.filter_combo.currentText()
         is_active = self.FILTER_MAP.get(filter_text)
-        try:
-            members = self.api.get_committee_members(is_active=is_active)
-        except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить список НК:\n{e}")
-            return
-
+        members = list(AppCache.committee_members)
+        if is_active is not None:
+            members = [m for m in members if bool(m.get("is_active")) == is_active]
         self._populate_table(members)
+        return True
+
+    def load_data(self):
+        if AppCache.committee_members is not None:
+            filter_text = self.filter_combo.currentText()
+            is_active = self.FILTER_MAP.get(filter_text)
+            members = list(AppCache.committee_members)
+            if is_active is not None:
+                members = [m for m in members if bool(m.get("is_active")) == is_active]
+            self._populate_table(members)
+        self._fetch_from_network()
+
+    def refresh_data(self):
+        self.load_data()
+
+    def _fetch_from_network(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
+        filter_text = self.filter_combo.currentText()
+        is_active = self.FILTER_MAP.get(filter_text)
+
+        def fetch():
+            return thread_api_call(
+                lambda api: api.get_committee_members(is_active=is_active),
+            )
+
+        run_api_fetch(
+            fetch,
+            on_success=lambda members: self._on_members_loaded(members, gen, is_active),
+            on_error=lambda err: self._on_load_error(err, gen),
+        )
+
+    def _on_members_loaded(self, members, gen: int, is_active):
+        if gen != self._refresh_gen:
+            return
+        if is_active is None:
+            AppCache.set_committee_members(members or [])
+        self._populate_table(members or [])
+
+    def _on_load_error(self, err: str, gen: int):
+        if gen != self._refresh_gen:
+            return
+        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить список НК:\n{err}")
 
     def _populate_table(self, members: list):
         self.table.setSortingEnabled(False)
@@ -185,6 +229,16 @@ class CommitteeListPage(QWidget):
     # ── slots ────────────────────────────────────────────────────────────
 
     def _on_filter_changed(self):
+        cached = AppCache.committee_members
+        if cached is not None:
+            filter_text = self.filter_combo.currentText()
+            is_active = self.FILTER_MAP.get(filter_text)
+            if is_active is None:
+                members = list(cached)
+            else:
+                members = [m for m in cached if bool(m.get("is_active")) == is_active]
+            self._populate_table(members)
+            return
         self.load_data()
 
     def _on_create(self):

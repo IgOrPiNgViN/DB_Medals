@@ -29,6 +29,10 @@ class AwardUpdate(BaseModel):
 class AwardRead(AwardBase):
     id: int
     created_at: Optional[datetime] = None
+    has_image: bool = False
+    has_image_back: bool = False
+    has_establishment: bool = False
+    has_development: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -103,6 +107,15 @@ class AwardDevelopmentCreate(AwardDevelopmentBase):
 
 class AwardDevelopmentRead(AwardDevelopmentBase):
     id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AwardDetailRead(AwardRead):
+    """Полная карточка награды: флаги наличия данных + вложенные блоки (если есть)."""
+
+    establishment: Optional[AwardEstablishmentRead] = None
+    development: Optional[AwardDevelopmentRead] = None
 
     model_config = ConfigDict(from_attributes=True)
 

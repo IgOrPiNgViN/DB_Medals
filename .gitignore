@@ -9,6 +9,15 @@
 migration/extracted_images/
 award_images/
 
+# Скрипты генерации таблиц и приложений для отчёта ВКР (локальные)
+migration/build_abbreviations_docx.py
+migration/build_gantt_excel.py
+migration/build_table_a1_docx.py
+migration/build_table_a2_docx.py
+migration/build_table1_docx.py
+migration/build_table2_docx.py
+migration/build_table3_docx.py
+
 # Виртуальное окружение
 .venv/
 venv/
