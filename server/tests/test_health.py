@@ -21,6 +21,7 @@ class TestHealth:
         assert r.status_code == 200
         data = r.json()
         assert data.get("status") == "ok"
+        assert data.get("database") == "ok"
 
     def test_root_service_name(self, client):
         r = client.get("/")

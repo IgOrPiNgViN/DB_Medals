@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import date as dt_date
 import math
 import re
@@ -49,6 +50,43 @@ def _get_bulletin_or_404(db: Session, bulletin_id: int) -> Bulletin:
     if not obj:
         raise HTTPException(status_code=404, detail="Bulletin not found")
     return obj
+
+
+def _bulletin_question_ids(db: Session, bulletin_id: int) -> set[int]:
+    section_ids = [
+        s.id
+        for s in db.query(BulletinSection.id)
+        .filter(BulletinSection.bulletin_id == bulletin_id)
+        .all()
+    ]
+    if not section_ids:
+        return set()
+    return {
+        q.id
+        for q in db.query(BulletinQuestion.id)
+        .filter(BulletinQuestion.section_id.in_(section_ids))
+        .all()
+    }
+
+
+def _members_voted_status(
+    db: Session, bulletin_id: int, member_ids: list[int],
+) -> dict[int, bool]:
+    """True, если член НК проголосовал по всем вопросам бюллетеня."""
+    question_ids = _bulletin_question_ids(db, bulletin_id)
+    if not question_ids or not member_ids:
+        return {mid: False for mid in member_ids}
+    rows = (
+        db.query(Vote.member_id)
+        .filter(
+            Vote.member_id.in_(member_ids),
+            Vote.question_id.in_(question_ids),
+        )
+        .all()
+    )
+    counts = Counter(r[0] for r in rows)
+    required = len(question_ids)
+    return {mid: counts.get(mid, 0) >= required for mid in member_ids}
 
 
 def _get_section_or_404(db: Session, section_id: int) -> BulletinSection:
@@ -430,6 +468,9 @@ def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
         .filter(BulletinDistribution.bulletin_id == bulletin_id)
         .all()
     )
+    voted = _members_voted_status(
+        db, bulletin_id, [d.member_id for d in dists],
+    )
     return [
         MonitoringEntry(
             distribution_id=d.id,
@@ -439,6 +480,7 @@ def monitoring(bulletin_id: int, db: Session = Depends(get_db)):
             sent_date=d.sent_date,
             received=d.received or False,
             received_date=d.received_date,
+            has_voted=voted.get(d.member_id, False),
         )
         for d in dists
     ]
@@ -457,6 +499,9 @@ def monitoring_summary(bulletin_id: int, db: Session = Depends(get_db)):
     active = db.query(CommitteeMember).filter(CommitteeMember.is_active.is_(True)).count()
     required = max(1, math.ceil(active * VOTING_QUORUM_RATIO)) if active else 1
     received = sum(1 for d in dists if d.received)
+    voted = _members_voted_status(
+        db, bulletin_id, [d.member_id for d in dists],
+    )
     entries = [
         MonitoringEntry(
             distribution_id=d.id,
@@ -466,6 +511,7 @@ def monitoring_summary(bulletin_id: int, db: Session = Depends(get_db)):
             sent_date=d.sent_date,
             received=d.received or False,
             received_date=d.received_date,
+            has_voted=voted.get(d.member_id, False),
         )
         for d in dists
     ]

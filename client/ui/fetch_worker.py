@@ -77,8 +77,8 @@ def _pump() -> None:
             _notify()
             QTimer.singleShot(0, _pump)
 
-        worker.succeeded.connect(ok)
-        worker.failed.connect(err)
+        worker.succeeded.connect(lambda r: QTimer.singleShot(0, lambda: ok(r)))
+        worker.failed.connect(lambda e: QTimer.singleShot(0, lambda: err(e)))
         worker.finished.connect(_done)
         worker.finished.connect(worker.deleteLater)
         _active.append(worker)
@@ -106,8 +106,9 @@ def run_api_fetch(
         _notify()
         QTimer.singleShot(0, _pump)
 
-    worker.succeeded.connect(on_success)
-    worker.failed.connect(on_error)
+    # Колбэки — только в GUI-потоке (иначе индикатор «Подключено» не сбрасывается).
+    worker.succeeded.connect(lambda r: QTimer.singleShot(0, lambda: on_success(r)))
+    worker.failed.connect(lambda e: QTimer.singleShot(0, lambda: on_error(e)))
     worker.finished.connect(_done)
     worker.finished.connect(worker.deleteLater)
     _active.append(worker)

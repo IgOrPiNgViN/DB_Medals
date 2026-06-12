@@ -14,7 +14,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"   # 5433 на хосте — не мешает локальному PostgreSQL на 5432
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d awards_db"]
       interval: 5s
@@ -34,11 +34,18 @@ services:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "8000"
       BACKUP_DIR: /app/server/backups
-      CONSENT_TEMPLATE_PATH: /app/templates/consent.docx
+      CONSENT_TEMPLATE_PATH: /app/templates/Согласие на обработку пер данных Награждения.docx
+      CERTIFICATE_TEMPLATE_PATH: /app/templates/Удостоверение к награде.docx
+      BULLETIN_TEMPLATE_PATH: /app/templates/Бюллетень голосования.docx
+      PROTOCOL_BRIEF_TEMPLATE_PATH: /app/templates/Протокол краткий.docx
+      PROTOCOL_FULL_TEMPLATE_PATH: /app/templates/Протокол подробный.docx
+      EXTRACT_MEDAL_TEMPLATE_PATH: /app/templates/Выписка из протокола — медаль.docx
+      EXTRACT_PPZ_TEMPLATE_PATH: /app/templates/Выписка из протокола — ППЗ.docx
+      PPZ_SUBMISSION_TEMPLATE_PATH: /app/templates/Представление ППЗ.docx
+      MONITORING_TEMPLATE_PATH: /app/templates/Мониторинг ответов.docx
     volumes:
       - api_backups:/app/server/backups
-      # Реальный шаблон согласия (вместо пустого из Dockerfile):
-      # - "./data/templates/Согласие на обработку пер данных Награждения.docx:/app/templates/consent.docx:ro"
+      - ./data/templates:/app/templates:ro
     depends_on:
       db:
         condition: service_healthy

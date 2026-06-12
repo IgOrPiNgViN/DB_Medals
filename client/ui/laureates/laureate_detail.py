@@ -8,6 +8,12 @@ from PyQt5.QtCore import pyqtSignal, Qt, QTimer
 from PyQt5.QtGui import QColor, QBrush
 
 from api_client import APIError
+from ui.connection_state import connection_state
+from ui.offline_guard import (
+    save_local_draft_on_failure,
+    user_facing_error,
+    warn_if_offline,
+)
 from ui.numeric_sort_item import NumericSortTableItem
 from ui.table_fill import configure_table_rows
 from ui.photo_helpers import make_photo_preview_label, set_photo_bytes, set_photo_placeholder, wrap_photo_row
@@ -362,7 +368,8 @@ class LaureateDetailPage(QWidget):
 
     def _mark_dirty(self):
         self._dirty = True
-        self._autosave_timer.start(1500)
+        if connection_state.is_online:
+            self._autosave_timer.start(1500)
 
     def _autosave_silent(self):
         self._on_save(silent=True)
@@ -399,11 +406,16 @@ class LaureateDetailPage(QWidget):
     def _on_save(self, silent: bool = False):
         if self._laureate_id is None:
             return
+        if silent and not connection_state.is_online:
+            return
+        if not silent and not warn_if_offline(self, "Сохранение"):
+            return
         data = self._collect_data()
         if not data.get("full_name"):
             if not silent:
                 QMessageBox.warning(self, "Ошибка", "Поле «ФИО» обязательно.")
             return
+        label = data["full_name"]
         try:
             updated = self.api.update_laureate(self._laureate_id, data)
             self._populate_fields(updated)
@@ -411,8 +423,18 @@ class LaureateDetailPage(QWidget):
             if not silent:
                 QMessageBox.information(self, "Сохранено", "Данные лауреата обновлены.")
         except APIError as e:
+            if save_local_draft_on_failure(
+                kind="laureate",
+                entity_id=self._laureate_id,
+                label=label,
+                payload=data,
+                parent=self,
+                silent=silent,
+                error=e,
+            ):
+                return
             if not silent:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{e.detail}")
+                QMessageBox.critical(self, "Ошибка", user_facing_error(e))
 
     def _on_delete(self):
         if self._laureate_id is None:

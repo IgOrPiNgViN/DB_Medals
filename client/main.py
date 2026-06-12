@@ -29,6 +29,7 @@ _ensure_qt_plugins()
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QFile, QTextStream
 
+from app_icon import load_app_icon
 from ui.main_window import MainWindow
 
 
@@ -48,7 +49,13 @@ def main():
     app.setStyle("Fusion")
     app.setStyleSheet(load_stylesheet())
 
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.showMaximized()
     sys.exit(app.exec_())
 

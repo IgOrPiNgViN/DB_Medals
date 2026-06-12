@@ -63,6 +63,9 @@ def main() -> int:
     client_src = root / "client"
     build_root = Path(tempfile.gettempdir()) / "oon-pkr-build"
 
+    print("0) иконка приложения")
+    _run([sys.executable, str(root / "scripts" / "prepare_app_icon.py")], cwd=root)
+
     if build_root.exists():
         shutil.rmtree(build_root, ignore_errors=True)
     build_root.mkdir(parents=True)
@@ -126,16 +129,24 @@ def main() -> int:
 
     out = _install_dist(built, root / "dist" / "OON-PKR-Awards")
 
-    env_example = root / ".env.example"
-    if env_example.is_file():
-        shutil.copy(env_example, out / ".env.example")
+    env_src = root / ".env" if (root / ".env").is_file() else root / ".env.example"
+    if env_src.is_file():
+        lines = []
+        for raw in env_src.read_text(encoding="utf-8").splitlines():
+            if raw.strip().startswith("DATABASE_URL"):
+                continue
+            if raw.strip().startswith("POSTGRES_PASSWORD"):
+                continue
+            lines.append(raw)
+        (out / ".env").write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    else:
+        (out / ".env").write_text("SERVER_URL=http://localhost:8000\n", encoding="utf-8")
 
     (out / "ПРОЧТИ_МЕНЯ.txt").write_text(
         "ООН ПКР — клиент\n\n"
-        "1. Скопируйте .env.example в .env\n"
-        "2. В .env: SERVER_URL=http://<сервер>:<порт>  (без /api)\n"
-        "3. Запустите OON-PKR-Awards.exe\n\n"
-        "На сервере должен быть доступен API (Docker / uvicorn).\n",
+        "1. На сервере запустите Docker: scripts\\start_docker_stack.ps1 -Import\n"
+        "2. Запустите OON-PKR-Awards.exe (рядом лежит .env с SERVER_URL)\n\n"
+        "По умолчанию API: http://localhost:8000\n",
         encoding="utf-8",
     )
 

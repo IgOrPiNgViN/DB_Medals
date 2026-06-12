@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from config import SERVER_HOST, SERVER_PORT
 from database import engine, Base
@@ -69,8 +70,21 @@ def api_root():
 
 @app.get("/api/health")
 def api_health():
-    """Проверка доступности API для клиента (base_url = .../api)."""
-    return {"status": "ok", "service": "ООН ПКР API"}
+    """Проверка API и PostgreSQL для клиента (base_url = .../api)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "service": "ООН ПКР API",
+                "database": "unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+    return {"status": "ok", "service": "ООН ПКР API", "database": "ok"}
 
 
 if __name__ == "__main__":

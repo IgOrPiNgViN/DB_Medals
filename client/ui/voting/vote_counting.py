@@ -1,8 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox, QMessageBox, QDialog, QDialogButtonBox,
-    QCheckBox, QGroupBox, QScrollArea,
+    QComboBox, QMessageBox, QDialog, QGroupBox, QListWidget, QListWidgetItem,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor
@@ -17,43 +16,134 @@ COLOR_FAIL = QColor("#FFCDD2")
 
 
 class BallotDialog(QDialog):
-    """Ballot form: list of questions with 'За' checkboxes."""
+    """Бюллетень: выбор вопроса(ов) и голосование кнопками «Да» / «Нет»."""
 
     def __init__(self, member_name: str, questions: list, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Бюллетень — {member_name}")
-        self.setMinimumSize(520, 400)
+        self.setMinimumSize(560, 440)
+        self._questions = list(questions)
+        self._votes: dict[int, bool] = {}
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Голосование: {member_name}"))
+        title = QLabel(f"Голосование: {member_name}")
+        title.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        layout.addWidget(title)
+        layout.addWidget(QLabel("Выберите вопрос (или несколько), затем нажмите «Да» или «Нет»:"))
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        self._q_layout = QVBoxLayout(container)
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        for q in self._questions:
+            item = QListWidgetItem(self._question_label(q))
+            item.setData(Qt.UserRole, int(q["id"]))
+            self._list.addItem(item)
+        self._list.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self._list, 1)
 
-        self._checkboxes: list[tuple[int, QCheckBox]] = []
-        for q in questions:
-            text = q.get("text", f"Вопрос #{q['id']}")
-            cb = QCheckBox(text)
-            cb.setChecked(True)
-            self._q_layout.addWidget(cb)
-            self._checkboxes.append((q["id"], cb))
-        self._q_layout.addStretch()
+        self._selection_hint = QLabel("Выберите вопрос в списке")
+        self._selection_hint.setStyleSheet("color: #666666;")
+        layout.addWidget(self._selection_hint)
 
-        scroll.setWidget(container)
-        layout.addWidget(scroll, 1)
+        vote_row = QHBoxLayout()
+        vote_row.addStretch()
+        self.btn_yes = QPushButton("Да")
+        self.btn_yes.setMinimumWidth(120)
+        self.btn_yes.setEnabled(False)
+        self.btn_yes.clicked.connect(lambda: self._apply_vote(True))
+        vote_row.addWidget(self.btn_yes)
+        self.btn_no = QPushButton("Нет")
+        self.btn_no.setMinimumWidth(120)
+        self.btn_no.setProperty("class", "btn-secondary")
+        self.btn_no.setEnabled(False)
+        self.btn_no.clicked.connect(lambda: self._apply_vote(False))
+        vote_row.addWidget(self.btn_no)
+        vote_row.addStretch()
+        layout.addLayout(vote_row)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        btn_cancel = QPushButton("Отмена")
+        btn_cancel.setProperty("class", "btn-secondary")
+        btn_cancel.clicked.connect(self.reject)
+        bottom.addWidget(btn_cancel)
+        btn_save = QPushButton("Сохранить голос")
+        btn_save.setMinimumWidth(160)
+        btn_save.clicked.connect(self._on_save)
+        bottom.addWidget(btn_save)
+        layout.addLayout(bottom)
+
+        from ui.help_installer import install_help_for_page
+        install_help_for_page(self, "ballot_dialog")
+
+        if len(self._questions) == 1:
+            self._list.setCurrentRow(0)
+
+    def _question_text(self, q: dict) -> str:
+        return (q.get("text") or "").strip() or f"Вопрос #{q['id']}"
+
+    def _question_label(self, q: dict) -> str:
+        qid = int(q["id"])
+        text = self._question_text(q)
+        if qid not in self._votes:
+            return text
+        mark = "Да" if self._votes[qid] else "Нет"
+        return f"{text}  —  {mark}"
+
+    def _refresh_list_labels(self) -> None:
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            qid = int(item.data(Qt.UserRole))
+            q = next((x for x in self._questions if int(x["id"]) == qid), {"id": qid, "text": item.text()})
+            item.setText(self._question_label(q))
+
+    def _on_selection_changed(self) -> None:
+        selected = self._list.selectedItems()
+        enabled = bool(selected)
+        self.btn_yes.setEnabled(enabled)
+        self.btn_no.setEnabled(enabled)
+        if not selected:
+            self._selection_hint.setText("Выберите вопрос в списке")
+            return
+        if len(selected) == 1:
+            qid = int(selected[0].data(Qt.UserRole))
+            q = next((x for x in self._questions if int(x["id"]) == qid), None)
+            text = self._question_text(q) if q else selected[0].text()
+            self._selection_hint.setText(f"Выбран вопрос: {text}")
+        else:
+            self._selection_hint.setText(f"Выбрано вопросов: {len(selected)}")
+
+    def _apply_vote(self, vote_for: bool) -> None:
+        selected = self._list.selectedItems()
+        if not selected:
+            return
+        for item in selected:
+            self._votes[int(item.data(Qt.UserRole))] = vote_for
+        self._refresh_list_labels()
+        label = "Да" if vote_for else "Нет"
+        self._selection_hint.setText(f"Отмечено: {label}")
+
+    def _on_save(self) -> None:
+        missing = [
+            self._question_text(q)
+            for q in self._questions
+            if int(q["id"]) not in self._votes
+        ]
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Бюллетень",
+                "Проголосуйте по всем вопросам бюллетеня.\n\n"
+                "Без ответа:\n• " + "\n• ".join(missing[:8])
+                + ("\n…" if len(missing) > 8 else ""),
+            )
+            return
+        self.accept()
 
     def get_votes(self) -> list[dict]:
-        """Return list of {question_id, vote_for}."""
+        """Список {question_id, vote_for} по всем вопросам бюллетеня."""
         return [
-            {"question_id": qid, "vote_for": cb.isChecked()}
-            for qid, cb in self._checkboxes
+            {"question_id": qid, "vote_for": vote_for}
+            for qid, vote_for in self._votes.items()
         ]
 
 
@@ -212,7 +302,7 @@ class VoteCountingPage(QWidget):
             self.members_table.setItem(i, 2, status_item)
         self.members_table.setSortingEnabled(True)
 
-    def _load_results(self):
+    def _load_results(self, *, show_decision_popup: bool = False):
         self.results_table.setSortingEnabled(False)
         self.results_table.setRowCount(0)
         self.lbl_decision.setText("")
@@ -256,7 +346,7 @@ class VoteCountingPage(QWidget):
         if results and all_pass:
             self.lbl_decision.setText("✓ Решение принято (≥65% по всем вопросам)")
             self.lbl_decision.setStyleSheet("color: #2E7D32;")
-            if not self._decision_popup_shown:
+            if show_decision_popup and not self._decision_popup_shown:
                 self._decision_popup_shown = True
                 QMessageBox.information(
                     self,
@@ -314,15 +404,16 @@ class VoteCountingPage(QWidget):
         try:
             for v in votes:
                 self.api.record_vote(v["question_id"], {
+                    "question_id": v["question_id"],
                     "member_id": member_id,
-                    "vote_for": v["vote_for"],
+                    "value": "for" if v["vote_for"] else "against",
                 })
             QMessageBox.information(self, "Успех", "Голос записан.")
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка записи голоса:\n{e}")
 
         self._load_eligible_members()
-        self._load_results()
+        self._load_results(show_decision_popup=True)
 
     def _on_save_results(self):
         self._load_results()

@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QLabel, QFrame, QPushButton, QStatusBar,
-    QScrollArea, QSizePolicy, QButtonGroup, QProgressBar,
+    QScrollArea, QSizePolicy, QButtonGroup, QProgressBar, QMessageBox,
 )
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QFont, QIcon
@@ -41,6 +41,9 @@ from ui.voting.ppz_submission import PPZSubmissionPage
 
 from ui.service.db_export import DBExportPage
 from ui.service.access_tables_page import AccessTablesPage
+from ui.help_installer import install_help_for_page
+from ui.connection_state import connection_state
+from ui.draft_store import flush_all, list_pending_drafts
 
 
 # ── Navigation structure ────────────────────────────────────────────────────
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self.api = APIClient()
 
         self.setWindowTitle("ООН ПКР — База данных наград")
+        self.setMinimumSize(960, 640)
         self.resize(1280, 800)
         self._center_on_screen()
 
@@ -113,10 +117,14 @@ class MainWindow(QMainWindow):
         self._awaiting_preload: dict[str, QWidget] = {}
         self._warm_queue: list[str] = []
         self._warm_pass = 0
+        self._offline_banner_warned = False
+        self._connection_lost_in_session = False
+        self._initial_health_pending = True
 
         self._build_ui()
         self._load_cache_and_preload()
         self._build_status_bar()
+        connection_state.changed.connect(self._on_connection_changed)
         self._start_health_timer()
 
     _PAGE_TO_CACHE = {
@@ -235,9 +243,20 @@ class MainWindow(QMainWindow):
         sidebar = self._build_sidebar()
         root_layout.addWidget(sidebar)
 
+        content_wrap = QWidget()
+        content_col = QVBoxLayout(content_wrap)
+        content_col.setContentsMargins(0, 0, 0, 0)
+        content_col.setSpacing(0)
+
+        self._offline_banner = self._build_offline_banner()
+        self._offline_banner.hide()
+        content_col.addWidget(self._offline_banner)
+
         self.stack = QStackedWidget()
         self.stack.setProperty("class", "content-area")
-        root_layout.addWidget(self.stack, 1)
+        content_col.addWidget(self.stack, 1)
+
+        root_layout.addWidget(content_wrap, 1)
 
         self._populate_sidebar_and_pages()
         self._build_award_detail_page()
@@ -389,6 +408,9 @@ class MainWindow(QMainWindow):
         apply_fn = getattr(widget, "apply_from_cache_only", None)
         if callable(apply_fn) and apply_fn():
             self._pages_loaded.add(page_key)
+            relayout = getattr(widget, "schedule_catalog_relayout", None)
+            if callable(relayout):
+                relayout()
             return True
         return False
 
@@ -409,6 +431,103 @@ class MainWindow(QMainWindow):
         self._warm_page(page_key)
         if self._warm_queue and warm_pass == self._warm_pass:
             QTimer.singleShot(0, lambda: self._warm_next_page(warm_pass))
+
+    def _build_offline_banner(self) -> QWidget:
+        bar = QWidget()
+        bar.setProperty("class", "offline-banner")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(12, 8, 12, 8)
+        self._offline_banner_label = QLabel(
+            "Нет связи с сервером. Доступен просмотр ранее загруженных данных; "
+            "сохранение и изменения временно недоступны.",
+        )
+        self._offline_banner_label.setWordWrap(True)
+        row.addWidget(self._offline_banner_label, 1)
+        btn_check = QPushButton("Проверить связь")
+        btn_check.setProperty("class", "btn-secondary")
+        btn_check.clicked.connect(self._check_health)
+        row.addWidget(btn_check)
+        return bar
+
+    def _apply_connection_ui(self, online: bool) -> None:
+        self._update_connection_label(online)
+        show_banner = not online
+        self._offline_banner.setVisible(show_banner)
+        if show_banner and self._initial_health_pending:
+            self._offline_banner_label.setText(
+                "Проверка связи с сервером… Сохранение и изменения временно недоступны.",
+            )
+        elif show_banner:
+            self._offline_banner_label.setText(
+                "Нет связи с сервером. Доступен просмотр ранее загруженных данных; "
+                "сохранение и изменения временно недоступны.",
+            )
+        if online:
+            QTimer.singleShot(200, self._relayout_current_content_page)
+
+    def _maybe_warn_offline(self) -> None:
+        if self._offline_banner_warned or self._initial_health_pending:
+            return
+        self._offline_banner_warned = True
+        pending = len(list_pending_drafts())
+        extra = ""
+        if pending:
+            extra = (
+                f"\n\nЛокальных черновиков: {pending} — "
+                "отправятся после восстановления связи."
+            )
+        QMessageBox.warning(
+            self,
+            "Связь с сервером потеряна",
+            "Работа без сервера: можно просматривать кэшированные списки, "
+            "но сохранять и создавать записи нельзя."
+            + extra,
+        )
+
+    def _relayout_current_content_page(self) -> None:
+        idx = self.stack.currentIndex()
+        widget = self.stack.widget(idx)
+        if widget is None:
+            return
+        fn = getattr(widget, "schedule_catalog_relayout", None)
+        if callable(fn):
+            fn()
+
+    def _on_connection_changed(self, online: bool) -> None:
+        self._apply_connection_ui(online)
+        if online:
+            if self._connection_lost_in_session:
+                self._connection_lost_in_session = False
+                self._offline_banner_warned = False
+                self._on_connection_restored()
+        else:
+            if connection_state.ever_online:
+                self._connection_lost_in_session = True
+            self._maybe_warn_offline()
+
+    def _on_connection_restored(self) -> None:
+        ok, errors = flush_all(self.api)
+        msg = "Связь с сервером восстановлена."
+        if ok:
+            msg += f"\n\nОтправлено черновиков на сервер: {ok}."
+            self._refresh_current_page()
+        if errors:
+            msg += "\n\nНе удалось отправить:\n• " + "\n• ".join(errors[:5])
+        if ok or errors:
+            msg += "\n\nРекомендуется нажать «Обновить» на текущей странице."
+        QMessageBox.information(self, "Сервер снова доступен", msg)
+
+    def _refresh_current_page(self) -> None:
+        idx = self.stack.currentIndex()
+        for key, page_idx in self._pages.items():
+            if page_idx == idx:
+                widget = self.stack.widget(idx)
+                if widget and hasattr(widget, "refresh_data"):
+                    widget.refresh_data()
+                return
+        widget = self.stack.widget(idx)
+        if widget and hasattr(widget, "refresh_data"):
+            widget.refresh_data()
 
     # ── sidebar ---------------------------------------------------------
 
@@ -465,6 +584,7 @@ class MainWindow(QMainWindow):
                 self._page_buttons.append(btn)
 
                 page_widget = self._create_page(page_key, label_text)
+                install_help_for_page(page_widget, page_key)
                 idx = self.stack.addWidget(page_widget)
                 self._pages[page_key] = idx
 
@@ -555,7 +675,9 @@ class MainWindow(QMainWindow):
             return ExtractPage(self.api)
 
         if page_key == "ppz_submissions":
-            return PPZSubmissionPage(self.api)
+            page = PPZSubmissionPage(self.api)
+            page.assign_authorized_requested.connect(self._open_ppz_assign_authorized)
+            return page
 
         if page_key == "access_mirror":
             return AccessTablesPage(self.api)
@@ -571,6 +693,7 @@ class MainWindow(QMainWindow):
         self._award_detail = AwardDetailPage(self.api)
         self._award_detail.go_back.connect(self._close_award_detail)
         self._award_detail_idx = self.stack.addWidget(self._award_detail)
+        install_help_for_page(self._award_detail, "award_detail")
 
     def _open_award_detail(self, award_id: int):
         if not self._maybe_confirm_unsaved_on_leave():
@@ -596,6 +719,8 @@ class MainWindow(QMainWindow):
         self._laureate_lc_idx = self.stack.addWidget(self._laureate_lc)
 
         self._lc_return_page: str = "laureate_cards"
+        install_help_for_page(self._laureate_detail, "laureate_detail")
+        install_help_for_page(self._laureate_lc, "laureate_lifecycle")
 
     def _open_laureate_detail(self, laureate_id: int):
         if not self._maybe_confirm_unsaved_on_leave():
@@ -663,6 +788,8 @@ class MainWindow(QMainWindow):
         self._member_card = MemberCardPage(self.api)
         self._member_card.back_requested.connect(self._close_member_card)
         self._member_card_idx = self.stack.addWidget(self._member_card)
+        self._nk_return_page: str | None = None
+        install_help_for_page(self._member_card, "member_card")
 
     def _open_member_card(self, member_id: int):
         if not self._maybe_confirm_unsaved_on_leave():
@@ -672,7 +799,37 @@ class MainWindow(QMainWindow):
         for btn in self._page_buttons:
             btn.setChecked(False)
 
+    def _open_ppz_assign_authorized(self, award_id: int, award_name: str):
+        """Из «Представления ППЗ» — назначить уполномоченного по награде."""
+        if not self._maybe_confirm_unsaved_on_leave():
+            return
+        self._nk_return_page = "ppz_submissions"
+        self._select_page("committee_list")
+        for btn in self._page_buttons:
+            btn.setChecked(False)
+        label = award_name or f"ID {award_id}"
+        QMessageBox.information(
+            self,
+            "Назначение уполномоченного",
+            f"Награда: {label}\n\n"
+            "1. Выберите члена наградного комитета в списке.\n"
+            "2. Откройте карточку (двойной щелчок или «Назначить уполномоченным»).\n"
+            "3. В блоке «Уполномоченный по наградам» нажмите «Добавить» "
+            "и выберите эту награду.\n"
+            "4. Вернитесь «Назад» — откроется снова раздел «Представления ППЗ».",
+        )
+
     def _close_member_card(self):
+        if self._nk_return_page:
+            ret = self._nk_return_page
+            self._nk_return_page = None
+            self._select_page(ret)
+            idx = self._pages.get(ret)
+            if idx is not None:
+                page = self.stack.widget(idx)
+                if page is not None and hasattr(page, "refresh_data"):
+                    page.refresh_data()
+            return
         self._select_page("committee_list")
         page = self.stack.widget(self._pages.get("committee_list", 0))
         if hasattr(page, "refresh_data"):
@@ -733,6 +890,13 @@ class MainWindow(QMainWindow):
             self._sync_sidebar_checks()
             return
 
+        ret = getattr(self, "_nk_return_page", None)
+        if ret:
+            if page_key == ret:
+                self._nk_return_page = None
+            elif page_key != "committee_list":
+                self._nk_return_page = None
+
         idx = self._pages.get(page_key)
         if idx is None:
             return
@@ -755,9 +919,17 @@ class MainWindow(QMainWindow):
     def _deferred_page_refresh(self, widget: QWidget | None, generation: int, page_key: str) -> None:
         if generation != self._nav_generation:
             return
-        if page_key in self._pages_loaded:
-            return
         if widget is None:
+            return
+
+        # Уполномоченные могли назначить в НК без кнопки «Назад» — всегда обновлять.
+        if page_key == "ppz_submissions":
+            if hasattr(widget, "refresh_data"):
+                widget.refresh_data()
+            self._pages_loaded.add(page_key)
+            return
+
+        if page_key in self._pages_loaded:
             return
 
         apply_fn = getattr(widget, "apply_from_cache_only", None)
@@ -824,12 +996,20 @@ class MainWindow(QMainWindow):
         self._conn_label = QLabel()
         self._conn_label.setProperty("class", "status-label")
 
+        self._btn_check_conn = QPushButton("Проверить связь")
+        self._btn_check_conn.setProperty("class", "status-bar-btn")
+        self._btn_check_conn.setFixedHeight(22)
+        self._btn_check_conn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._btn_check_conn.clicked.connect(self._check_health)
+
         self._status_bar.addPermanentWidget(self._loading_label)
         self._status_bar.addPermanentWidget(self._loading_bar)
+        self._status_bar.addPermanentWidget(self._btn_check_conn)
         self._status_bar.addPermanentWidget(self._conn_label)
 
         fetch_activity.changed.connect(self._on_fetch_activity)
-        self._set_connection_status(False)
+        self._conn_label.setText("○ Проверка связи…")
+        self._conn_label.setStyleSheet("color: #888888; font-weight: bold;")
 
     def _on_fetch_activity(self, count: int) -> None:
         loading = count > 0
@@ -840,10 +1020,13 @@ class MainWindow(QMainWindow):
                 f"Загрузка данных… ({count})" if count > 1 else "Загрузка данных…",
             )
 
-    def _set_connection_status(self, connected: bool):
+    def _update_connection_label(self, connected: bool):
         if connected:
             self._conn_label.setText("● Подключено к серверу")
             self._conn_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        elif self._initial_health_pending:
+            self._conn_label.setText("○ Проверка связи…")
+            self._conn_label.setStyleSheet("color: #888888; font-weight: bold;")
         else:
             self._conn_label.setText("● Нет соединения")
             self._conn_label.setStyleSheet("color: #F44336; font-weight: bold;")
@@ -861,10 +1044,13 @@ class MainWindow(QMainWindow):
             return thread_api_call(lambda api: api.health_check())
 
         def on_ok(resp):
-            self._set_connection_status(resp.get("status") == "ok")
+            online = resp.get("status") == "ok" and resp.get("database") == "ok"
+            self._initial_health_pending = False
+            connection_state.set_online(online)
 
         def on_err(_err):
-            self._set_connection_status(False)
+            self._initial_health_pending = False
+            connection_state.set_online(False)
 
         run_api_fetch(fetch, on_success=on_ok, on_error=on_err)
 

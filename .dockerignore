@@ -1,13 +1,55 @@
+# Git / IDE
 .git
+.gitignore
+.vscode
+.idea
+terminals/
+mcps/
+.claude/
+
+# Клиент (в образ API не входит)
+client/
+dist/
+build/
+
+# Документация и ТЗ (оставляем в репозитории, не в образе)
+docs/
+Отчёт*/
+Техническое задание*/
+**/*.md
+!server/**/*.md
+
+# Миграции, скрипты разработки, тесты
+migration/
+scripts/
+server/tests/
+.pytest_cache/
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
 **/.venv
 **/venv
-client/
-docs/
+.env
+.env.*
+
+# Данные (фото и Access — в PostgreSQL после импорта)
+data/photos/
+data/legacy/
 *.accdb
-.vscode
-.idea
-terminals/
-mcps/
+*.mdb
+*.laccdb
+
+# Медиа и артефакты в корне
+*.jpg
+*.jpeg
+*.png
+!data/templates/**
+award_images/
+migration/extracted_images/
+backups/
+server/backups/
+
+# Прочее
+*.log
+Thumbs.db
+Desktop.ini

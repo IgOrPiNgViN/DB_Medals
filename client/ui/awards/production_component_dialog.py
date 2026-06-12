@@ -8,9 +8,10 @@ from PyQt5.QtWidgets import (
     QLabel, QMessageBox, QFileDialog, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QWheelEvent
 
 from api_client import APIClient, APIError
-from ui.table_fill import configure_table_rows
+from ui.table_fill import configure_table_rows, table_cell_combo_text, wrap_table_cell_widget
 
 PRODUCTION_STAGE_STATUSES = [
     "",
@@ -20,6 +21,32 @@ PRODUCTION_STAGE_STATUSES = [
     "Завершено",
     "Отменено",
 ]
+
+
+class _StageStatusCombo(QComboBox):
+    """Выпадающий список: без прокрутки колёсиком и без ручного ввода."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
+
+
+def make_stage_status_combo(current: str) -> QComboBox:
+    combo = _StageStatusCombo()
+    combo.setEditable(False)
+    combo.setInsertPolicy(QComboBox.NoInsert)
+    combo.setMaxVisibleItems(max(8, len(PRODUCTION_STAGE_STATUSES) + 2))
+    cur = (current or "").strip()
+    items = list(PRODUCTION_STAGE_STATUSES)
+    if cur and cur not in items:
+        items.append(cur)
+    for s in items:
+        combo.addItem(s)
+    idx = combo.findText(cur)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    return combo
 
 _COMPONENT_RU = {
     "medal": "Медаль",
@@ -64,11 +91,16 @@ class ProductionComponentDialog(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.STAGE_COLUMNS))
         self.table.setHorizontalHeaderLabels(self.STAGE_COLUMNS)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Interactive)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setMinimumSectionSize(100)
+        self.table.setColumnWidth(1, 160)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        configure_table_rows(self.table, 38)
+        configure_table_rows(self.table, 40)
         root.addWidget(self.table, 1)
 
         btn_row = QHBoxLayout()
@@ -81,6 +113,9 @@ class ProductionComponentDialog(QDialog):
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
+
+        from ui.help_installer import install_help_for_page
+        install_help_for_page(self, "production_component_dialog")
 
         if component_data:
             self.set_component_data(component_data)
@@ -113,16 +148,8 @@ class ProductionComponentDialog(QDialog):
             label_item.setData(Qt.UserRole, key)
             self.table.setItem(row, 0, label_item)
 
-            status_combo = QComboBox()
-            status_combo.setEditable(True)
-            cur = st.get("status") or ""
-            for s in PRODUCTION_STAGE_STATUSES:
-                status_combo.addItem(s)
-            if cur and cur not in PRODUCTION_STAGE_STATUSES:
-                status_combo.addItem(cur)
-            idx = status_combo.findText(cur)
-            status_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            self.table.setCellWidget(row, 1, status_combo)
+            status_combo = make_stage_status_combo(st.get("status") or "")
+            self.table.setCellWidget(row, 1, wrap_table_cell_widget(status_combo))
 
             self.table.setItem(row, 2, QTableWidgetItem(str(st.get("stage_date") or "")))
             self.table.setItem(row, 3, QTableWidgetItem(st.get("attachment_note") or ""))
@@ -169,8 +196,7 @@ class ProductionComponentDialog(QDialog):
             key = self._stage_key_at(row)
             if not key:
                 continue
-            combo = self.table.cellWidget(row, 1)
-            status = combo.currentText() if isinstance(combo, QComboBox) else ""
+            status = table_cell_combo_text(self.table, row, 1)
             date_item = self.table.item(row, 2)
             note_item = self.table.item(row, 3)
             stages.append({

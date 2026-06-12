@@ -1,10 +1,15 @@
 from typing import Optional, Any
 from datetime import date
 import os
+import time
 
 import httpx
 
 from config import API_BASE
+
+_WRITE_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY_SEC = 0.45
 
 
 class APIError(Exception):
@@ -27,20 +32,35 @@ class APIClient:
     # -- internal helpers ------------------------------------------------
 
     def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        try:
-            resp = self.client.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp
-        except httpx.HTTPStatusError as exc:
-            detail = ""
+        from ui.connection_state import OFFLINE_WRITE_MESSAGE, connection_state
+
+        if method.upper() in _WRITE_METHODS and not connection_state.is_online:
+            raise APIError(0, OFFLINE_WRITE_MESSAGE)
+
+        last_exc: Exception | None = None
+        for attempt in range(_RETRY_ATTEMPTS):
             try:
-                body = exc.response.json()
-                detail = body.get("detail", str(body))
-            except Exception:
-                detail = exc.response.text
-            raise APIError(exc.response.status_code, detail) from exc
-        except httpx.RequestError as exc:
-            raise APIError(0, f"Connection error: {exc}") from exc
+                resp = self.client.request(method, url, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as exc:
+                detail = ""
+                try:
+                    body = exc.response.json()
+                    detail = body.get("detail", str(body))
+                except Exception:
+                    detail = exc.response.text
+                raise APIError(exc.response.status_code, detail) from exc
+            except httpx.RequestError as exc:
+                last_exc = exc
+                if attempt < _RETRY_ATTEMPTS - 1:
+                    time.sleep(_RETRY_DELAY_SEC * (attempt + 1))
+                    continue
+                raise APIError(
+                    0,
+                    "Не удалось связаться с сервером. Проверьте сеть и что сервер запущен.",
+                ) from last_exc
+        raise APIError(0, "Не удалось связаться с сервером.") from last_exc
 
     def _get(self, url: str, **kwargs) -> Any:
         return self._request("GET", url, **kwargs).json()
@@ -712,4 +732,26 @@ class APIClient:
     def health_check(self) -> dict:
         # Не использовать "/" — при base_url .../api это даёт GET /api/ и раньше давало 404.
         # Относительный "health" и "/health" оба дают .../api/health (см. httpx merge_urls).
-        return self._get("health")
+        # Короткий таймаут без повторов — быстрее показать «нет связи».
+        from ui.connection_state import connection_state
+
+        try:
+            resp = self.client.get("health", timeout=4.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") == "ok" and data.get("database") == "ok":
+                connection_state.note_success()
+            return data
+        except httpx.HTTPStatusError as exc:
+            detail = ""
+            try:
+                body = exc.response.json()
+                detail = body.get("detail", str(body))
+            except Exception:
+                detail = exc.response.text
+            raise APIError(exc.response.status_code, detail) from exc
+        except httpx.RequestError as exc:
+            raise APIError(
+                0,
+                "Не удалось связаться с сервером. Проверьте сеть и что сервер запущен.",
+            ) from exc

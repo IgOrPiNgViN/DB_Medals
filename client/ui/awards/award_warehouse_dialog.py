@@ -104,6 +104,9 @@ class AwardWarehouseDialog(QDialog):
         close.clicked.connect(self.accept)
         root.addWidget(close)
 
+        from ui.help_installer import install_help_for_page
+        install_help_for_page(self, "award_warehouse_dialog")
+
         self._refresh()
 
     def _kit_type(self) -> str | None:

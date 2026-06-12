@@ -6,8 +6,8 @@ from PyQt5.QtWidgets import (
     QFormLayout, QLineEdit, QAbstractItemView, QScrollArea, QFrame,
     QGridLayout, QStackedWidget, QSizePolicy, QFileDialog,
 )
-from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QFont, QImage, QPixmap
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QEvent
+from PyQt5.QtGui import QFont, QImage, QPixmap, QFontMetrics
 
 from api_client import APIClient, APIError
 from ui.numeric_sort_item import NumericSortTableItem
@@ -199,6 +199,35 @@ class _AwardCatalogCard(QFrame):
 
     clicked_id = pyqtSignal(int)
 
+    @staticmethod
+    def count_title_lines(name: str, font: QFont, width: int) -> int:
+        fm = QFontMetrics(font)
+        words = name.strip().split()
+        if not words:
+            return 1
+        lines = 0
+        current = ""
+        for word in words:
+            trial = f"{current} {word}".strip() if current else word
+            if fm.horizontalAdvance(trial) <= width:
+                current = trial
+            else:
+                if current:
+                    lines += 1
+                current = word
+        if current:
+            lines += 1
+        return max(1, lines)
+
+    @staticmethod
+    def title_block_height(font: QFont, line_count: int) -> int:
+        fm = QFontMetrics(font)
+        return fm.lineSpacing() * line_count + 8
+
+    @staticmethod
+    def card_height(title_block_h: int) -> int:
+        return 28 + 160 + 10 + title_block_h
+
     def __init__(
         self,
         award_id: int,
@@ -208,6 +237,8 @@ class _AwardCatalogCard(QFrame):
         has_image_back: bool = False,
         catalog_gen: int = 0,
         page: "AwardsCardsPage | None" = None,
+        title_height: int | None = None,
+        card_height: int | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -217,10 +248,14 @@ class _AwardCatalogCard(QFrame):
         self._has_image = has_image
         self._has_image_back = has_image_back
         self._catalog_gen = catalog_gen
+        card_h = card_height if card_height is not None else self.card_height(
+            AwardsCardsPage.default_title_height(),
+        )
+        title_h = title_height if title_height is not None else AwardsCardsPage.default_title_height()
         self.setObjectName("AwardCatalogCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
-        self.setFixedWidth(196)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFixedSize(AwardsCardsPage.CARD_WIDTH, card_h)
         self.setStyleSheet(
             """
             QFrame#AwardCatalogCard {
@@ -244,11 +279,12 @@ class _AwardCatalogCard(QFrame):
         self._img.setStyleSheet("background: #f4f6f9; border-radius: 8px;")
         lay.addWidget(self._img, 0, Qt.AlignHCenter)
 
-        title = QLabel(name)
-        title.setWordWrap(True)
-        title.setAlignment(Qt.AlignCenter)
         tf = QFont()
         tf.setPointSize(9)
+        title = QLabel(name.strip())
+        title.setWordWrap(True)
+        title.setFixedHeight(title_h)
+        title.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         title.setFont(tf)
         title.setStyleSheet("color: #1a2332;")
         lay.addWidget(title)
@@ -330,7 +366,25 @@ class AwardsCardsPage(QWidget):
     award_selected = pyqtSignal(int)
 
     COLUMNS = ["№", "Название", "Тип", "Дата создания"]
-    GRID_COLS = 5
+    CARD_WIDTH = 196
+    GRID_SPACING = 18
+    GRID_MARGINS = 20
+    _TITLE_FONT = None
+
+    @classmethod
+    def _title_font(cls) -> QFont:
+        if cls._TITLE_FONT is None:
+            cls._TITLE_FONT = QFont()
+            cls._TITLE_FONT.setPointSize(9)
+        return cls._TITLE_FONT
+
+    @classmethod
+    def default_title_height(cls) -> int:
+        return _AwardCatalogCard.title_block_height(cls._title_font(), 1)
+
+    @classmethod
+    def _text_width(cls) -> int:
+        return cls.CARD_WIDTH - 24
 
     def __init__(self, api_client: APIClient, parent=None):
         super().__init__(parent)
@@ -342,7 +396,16 @@ class AwardsCardsPage(QWidget):
         self._catalog_gen = 0
         self._selected_catalog_id: int | None = None
         self._catalog_cards: dict[int, _AwardCatalogCard] = {}
+        self._catalog_award_ids: list[int] = []
+        self._layout_cols = 0
         self._last_applied_ids: tuple[int, ...] | None = None
+        self._deferred_catalog_awards: list | None = None
+        self._deferred_catalog_relayout_only = False
+        self._catalog_title_height = self.default_title_height()
+        self._catalog_card_height = _AwardCatalogCard.card_height(self._catalog_title_height)
+        self._catalog_defer_timer = QTimer(self)
+        self._catalog_defer_timer.setSingleShot(True)
+        self._catalog_defer_timer.timeout.connect(self._run_deferred_catalog_work)
         self._build_ui()
 
     def _build_ui(self):
@@ -377,7 +440,7 @@ class AwardsCardsPage(QWidget):
         self.btn_add.clicked.connect(self._on_create)
         toolbar.addWidget(self.btn_add)
 
-        self.btn_delete = QPushButton("Удалить награду")
+        self.btn_delete = QPushButton("Удалить")
         self.btn_delete.setProperty("class", "btn-danger")
         self.btn_delete.clicked.connect(self._on_delete)
         toolbar.addWidget(self.btn_delete)
@@ -390,16 +453,21 @@ class AwardsCardsPage(QWidget):
         catalog_scroll = QScrollArea()
         self._catalog_scroll = catalog_scroll
         catalog_scroll.setWidgetResizable(True)
+        catalog_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         catalog_scroll.setFrameShape(QScrollArea.NoFrame)
         catalog_scroll.setStyleSheet("QScrollArea { background: transparent; }")
         catalog_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._catalog_inner = QWidget()
         self._catalog_inner.setStyleSheet("background: transparent;")
+        self._catalog_inner.setMinimumWidth(0)
         self._catalog_inner.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         self._catalog_grid = QGridLayout(self._catalog_inner)
-        self._catalog_grid.setSpacing(18)
-        self._catalog_grid.setContentsMargins(20, 20, 20, 20)
+        self._catalog_grid.setSpacing(self.GRID_SPACING)
+        self._catalog_grid.setContentsMargins(
+            self.GRID_MARGINS, self.GRID_MARGINS, self.GRID_MARGINS, self.GRID_MARGINS,
+        )
         catalog_scroll.setWidget(self._catalog_inner)
+        catalog_scroll.viewport().installEventFilter(self)
         self.stack.addWidget(catalog_scroll)
 
         self.table = QTableWidget()
@@ -418,9 +486,144 @@ class AwardsCardsPage(QWidget):
 
         root.addWidget(self.stack, 1)
 
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         self.view_combo.currentIndexChanged.connect(self._on_view_changed)
         self._sync_stack_to_view()
+
+    def _update_catalog_title_metrics(self, awards: list) -> None:
+        font = self._title_font()
+        text_w = self._text_width()
+        max_lines = 1
+        for award in awards:
+            name = str(award.get("name", "") or "").strip()
+            if name:
+                max_lines = max(
+                    max_lines,
+                    _AwardCatalogCard.count_title_lines(name, font, text_w),
+                )
+        self._catalog_title_height = _AwardCatalogCard.title_block_height(font, max_lines)
+        self._catalog_card_height = _AwardCatalogCard.card_height(self._catalog_title_height)
+
+    def _available_catalog_width(self) -> int:
+        scroll = self._catalog_scroll
+        if scroll is None:
+            return self.CARD_WIDTH + 2 * self.GRID_MARGINS
+        candidates: list[int] = []
+        vp = scroll.viewport().width()
+        if vp >= 80:
+            candidates.append(vp)
+        sw = scroll.width()
+        if sw >= 80:
+            candidates.append(sw)
+        if self.stack is not None:
+            tw = self.stack.width()
+            if tw >= 80:
+                candidates.append(tw)
+        if candidates:
+            return min(candidates)
+        return self.CARD_WIDTH + 2 * self.GRID_MARGINS
+
+    def _catalog_layout_ready(self) -> bool:
+        if not self.isVisible():
+            return False
+        if self._catalog_scroll is None:
+            return False
+        return self._catalog_scroll.viewport().width() >= 80
+
+    def schedule_catalog_relayout(self, delay_ms: int = 150) -> None:
+        if not self._catalog_award_ids:
+            return
+        if self._deferred_catalog_awards is not None:
+            return
+        self._deferred_catalog_relayout_only = True
+        self._catalog_defer_timer.start(delay_ms)
+
+    def _schedule_catalog_rebuild(self, awards: list, delay_ms: int = 150) -> None:
+        self._deferred_catalog_awards = awards
+        self._deferred_catalog_relayout_only = False
+        self._catalog_defer_timer.start(delay_ms)
+
+    def _run_deferred_catalog_work(self) -> None:
+        if self._deferred_catalog_awards is not None:
+            if not self._catalog_layout_ready():
+                self._catalog_defer_timer.start(100)
+                return
+            awards = self._deferred_catalog_awards
+            self._deferred_catalog_awards = None
+            self._deferred_catalog_relayout_only = False
+            self._rebuild_catalog_now(awards)
+            return
+        if not self._deferred_catalog_relayout_only or not self._catalog_award_ids:
+            return
+        if not self._catalog_layout_ready():
+            self._catalog_defer_timer.start(100)
+            return
+        self._deferred_catalog_relayout_only = False
+        self._layout_cols = 0
+        self._relayout_catalog_grid(force=True)
+
+    def _effective_grid_cols(self) -> int:
+        if self._catalog_scroll is None:
+            return 1
+        usable = self._available_catalog_width() - 2 * self.GRID_MARGINS
+        cell = self.CARD_WIDTH + self.GRID_SPACING
+        cols = max(1, usable // cell)
+        while cols > 1 and (cols * self.CARD_WIDTH + (cols - 1) * self.GRID_SPACING) > usable:
+            cols -= 1
+        return cols
+
+    def _relayout_catalog_grid(self, *, force: bool = False) -> None:
+        if self._catalog_grid is None or not self._catalog_award_ids:
+            return
+        if self._catalog_scroll is not None and self._catalog_inner is not None:
+            inner_w = self._available_catalog_width()
+            page_w = self.width()
+            if page_w >= 80:
+                inner_w = min(inner_w, page_w - 56)
+            inner_w = max(self.CARD_WIDTH + 2 * self.GRID_MARGINS, inner_w)
+            self._catalog_inner.setMinimumWidth(0)
+            self._catalog_inner.setMaximumWidth(inner_w)
+        cols = self._effective_grid_cols()
+        if (
+            not force
+            and cols == self._layout_cols
+            and self._catalog_grid.count() == len(self._catalog_award_ids)
+        ):
+            return
+        self._layout_cols = cols
+        while self._catalog_grid.count():
+            self._catalog_grid.takeAt(0)
+        for i, aid in enumerate(self._catalog_award_ids):
+            card = self._catalog_cards.get(aid)
+            if card is None:
+                continue
+            r, c = divmod(i, cols)
+            self._catalog_grid.addWidget(card, r, c, Qt.AlignTop)
+        if self._catalog_inner is not None:
+            self._catalog_inner.updateGeometry()
+
+    def eventFilter(self, obj, event):
+        if (
+            self._catalog_scroll is not None
+            and obj is self._catalog_scroll.viewport()
+            and event.type() == QEvent.Resize
+        ):
+            self.schedule_catalog_relayout(50)
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._deferred_catalog_awards is not None:
+            QTimer.singleShot(0, self._run_deferred_catalog_work)
+        elif self._catalog_award_ids:
+            self.schedule_catalog_relayout(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.schedule_catalog_relayout(50)
 
     def apply_from_cache_only(self) -> bool:
         _, type_value = AWARD_TYPE_FILTER[self.filter_combo.currentIndex()]
@@ -484,7 +687,12 @@ class AwardsCardsPage(QWidget):
         ids = tuple(int(a.get("id") or 0) for a in awards)
         if ids != self._last_applied_ids:
             self._last_applied_ids = ids
-            self._rebuild_catalog(awards)
+            if self._catalog_layout_ready():
+                self._rebuild_catalog_now(awards)
+            else:
+                self._schedule_catalog_rebuild(awards)
+        elif (self.view_combo.currentData() or "catalog") == "catalog":
+            self.schedule_catalog_relayout()
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
@@ -504,20 +712,25 @@ class AwardsCardsPage(QWidget):
         self.table.setSortingEnabled(True)
 
     def _rebuild_catalog(self, awards: list) -> None:
+        self._schedule_catalog_rebuild(awards)
+
+    def _rebuild_catalog_now(self, awards: list) -> None:
         if self._catalog_grid is None:
             return
         _CatalogThumbLoader.clear()
         self._catalog_gen += 1
         catalog_gen = self._catalog_gen
         self._catalog_cards.clear()
+        self._catalog_award_ids = []
         self._selected_catalog_id = None
+        self._layout_cols = 0
         while self._catalog_grid.count():
             item = self._catalog_grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
 
-        cols = self.GRID_COLS
+        cols = self._effective_grid_cols()
         if not awards:
             hint = QLabel(
                 "Награды не найдены (пустой ответ от сервера или слишком строгий фильтр).\n"
@@ -526,11 +739,12 @@ class AwardsCardsPage(QWidget):
             hint.setWordWrap(True)
             hint.setAlignment(Qt.AlignCenter)
             hint.setStyleSheet("color: #334155; font-size: 14px; padding: 40px 24px;")
-            self._catalog_grid.addWidget(hint, 0, 0, 1, cols)
+            self._catalog_grid.addWidget(hint, 0, 0, 1, max(cols, 1))
             if self._catalog_scroll is not None:
                 self._catalog_scroll.updateGeometry()
             return
-        for i, award in enumerate(awards):
+        self._update_catalog_title_metrics(awards)
+        for award in awards:
             aid = int(award.get("id", 0))
             name = str(award.get("name", ""))
             has_img = bool(award.get("has_image"))
@@ -541,16 +755,15 @@ class AwardsCardsPage(QWidget):
                 has_image_back=has_img_back,
                 catalog_gen=catalog_gen,
                 page=self,
+                title_height=self._catalog_title_height,
+                card_height=self._catalog_card_height,
                 parent=self._catalog_inner,
             )
             card.clicked_id.connect(self.award_selected.emit)
             self._catalog_cards[aid] = card
-            r, c = divmod(i, cols)
-            self._catalog_grid.addWidget(card, r, c)
+            self._catalog_award_ids.append(aid)
 
-        if self._catalog_inner is not None:
-            self._catalog_inner.adjustSize()
-            self._catalog_inner.updateGeometry()
+        self._relayout_catalog_grid(force=True)
         if self._catalog_scroll is not None:
             self._catalog_scroll.updateGeometry()
 
@@ -592,6 +805,8 @@ class AwardsCardsPage(QWidget):
 
     def _on_view_changed(self):
         self._sync_stack_to_view()
+        if (self.view_combo.currentData() or "catalog") == "catalog":
+            self.schedule_catalog_relayout(0)
 
     def _on_double_click(self, index):
         row = index.row()

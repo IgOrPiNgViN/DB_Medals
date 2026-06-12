@@ -25,7 +25,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "server"
+sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(SERVER))
+from load_env import bootstrap_migration_env  # noqa: E402
+
+bootstrap_migration_env(ROOT)
 os.chdir(SERVER)
 
 from sqlalchemy import text  # noqa: E402

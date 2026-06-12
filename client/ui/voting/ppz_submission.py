@@ -4,16 +4,22 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QGroupBox, QFormLayout, QMessageBox, QTextEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QStackedWidget,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from api_client import APIError
+from ui.app_cache import AppCache
 from ui.print_helpers import export_html_to_pdf, print_html, plain_text_to_html
+from ui.table_fill import configure_table_rows
+from ui.form_helpers import apply_button_class
 
 
 class PPZSubmissionPage(QWidget):
     """PPZ submission page (Представление на награждение)."""
+
+    assign_authorized_requested = pyqtSignal(int, str)
 
     def __init__(self, api_client, parent=None):
         super().__init__(parent)
@@ -25,7 +31,8 @@ class PPZSubmissionPage(QWidget):
         self._load_ppz_table()
 
     def refresh_data(self):
-        self._load_laureates()
+        saved_la_id = self.laureate_combo.currentData()
+        self._load_laureates(preserve_laureate_award_id=saved_la_id)
         self._load_ppz_table()
 
     def _build_ui(self):
@@ -42,10 +49,24 @@ class PPZSubmissionPage(QWidget):
         self.laureate_combo = QComboBox()
         self.laureate_combo.currentIndexChanged.connect(self._on_laureate_changed)
         sg_layout.addRow("Лауреат–награда:", self.laureate_combo)
-        root.addWidget(select_group)
 
+        self._auth_stack = QStackedWidget()
         self.auth_combo = QComboBox()
-        sg_layout.addRow("Уполномоченный (НК):", self.auth_combo)
+        self._auth_stack.addWidget(self.auth_combo)
+
+        self._auth_empty_btn = QPushButton(
+            "Уполномоченный не назначен — нажмите, чтобы перейти к назначению в НК",
+        )
+        self._auth_empty_btn.setCursor(Qt.PointingHandCursor)
+        self._auth_empty_btn.setStyleSheet(
+            "QPushButton { text-align: left; color: #1565C0; border: 1px dashed #90CAF9; "
+            "border-radius: 4px; padding: 8px 10px; background: #E3F2FD; }"
+            "QPushButton:hover { background: #BBDEFB; }",
+        )
+        self._auth_empty_btn.clicked.connect(self._on_assign_authorized_click)
+        self._auth_stack.addWidget(self._auth_empty_btn)
+        sg_layout.addRow("Уполномоченный (НК):", self._auth_stack)
+        root.addWidget(select_group)
 
         info_group = QGroupBox("Информация о лауреате")
         ig_layout = QVBoxLayout(info_group)
@@ -89,28 +110,36 @@ class PPZSubmissionPage(QWidget):
         self.ppz_table = QTableWidget()
         self.ppz_table.setColumnCount(4)
         self.ppz_table.setHorizontalHeaderLabels(
-            ["ID", "Связка лауреат–награда", "Уполномоченный", "Дата"],
+            ["ID", "Лауреат–награда", "Уполномоченный", "Дата"],
         )
-        self.ppz_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        ppz_hdr = self.ppz_table.horizontalHeader()
+        ppz_hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        ppz_hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        ppz_hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        ppz_hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        ppz_hdr.setStretchLastSection(False)
+        ppz_hdr.setMinimumSectionSize(72)
+        self.ppz_table.verticalHeader().setVisible(False)
+        configure_table_rows(self.ppz_table, 36)
         self.ppz_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.ppz_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.ppz_table.setMaximumHeight(180)
-        lg.addWidget(self.ppz_table)
+        self.ppz_table.setMinimumHeight(160)
+        lg.addWidget(self.ppz_table, 1)
         ppz_btns = QHBoxLayout()
-        self.btn_delete_ppz = QPushButton("Удалить выбранное представление")
-        self.btn_delete_ppz.setProperty("class", "btn-danger")
+        self.btn_delete_ppz = QPushButton("Удалить")
+        apply_button_class(self.btn_delete_ppz, "btn-danger")
         self.btn_delete_ppz.clicked.connect(self._on_delete_ppz)
         ppz_btns.addWidget(self.btn_delete_ppz)
         ppz_btns.addStretch()
         lg.addLayout(ppz_btns)
-        root.addWidget(list_group)
-
-        root.addStretch(1)
+        root.addWidget(list_group, 1)
 
     # ── data ─────────────────────────────────────────────────────────────
 
-    def _load_laureates(self):
+    def _load_laureates(self, preserve_laureate_award_id=None):
+        self.laureate_combo.blockSignals(True)
         self.laureate_combo.clear()
+        self.laureate_combo.blockSignals(False)
         self._la_links = []
         try:
             grouped = self.api.report_awards_laureates()
@@ -137,14 +166,24 @@ class PPZSubmissionPage(QWidget):
             display = f"{name} — {award}".strip(" —")
             self.laureate_combo.addItem(display or f"Связка #{la_id}", la_id)
 
-        self._reload_authorized_combo(None)
+        if preserve_laureate_award_id is not None:
+            saved = int(preserve_laureate_award_id)
+            for i in range(self.laureate_combo.count()):
+                data = self.laureate_combo.itemData(i)
+                if data is not None and int(data) == saved:
+                    self.laureate_combo.setCurrentIndex(i)
+                    self._on_laureate_changed(i)
+                    return
 
         if self._la_links:
             self._on_laureate_changed(0)
+        else:
+            self._reload_authorized_combo(None)
 
     def _reload_authorized_combo(self, award_id: int | None):
         self.auth_combo.clear()
         if award_id is None:
+            self._auth_stack.setCurrentWidget(self._auth_empty_btn)
             return
         try:
             members = self.api.get_signers_for_award(int(award_id), role="authorized")
@@ -152,6 +191,48 @@ class PPZSubmissionPage(QWidget):
             members = []
         for m in members or []:
             self.auth_combo.addItem(m.get("full_name", f"#{m.get('id')}"), m.get("id"))
+        if members:
+            self._auth_stack.setCurrentWidget(self.auth_combo)
+        else:
+            self._auth_stack.setCurrentWidget(self._auth_empty_btn)
+
+    def _current_award_context(self) -> tuple[int | None, str]:
+        idx = self.laureate_combo.currentIndex()
+        if idx < 0 or idx >= len(self._la_links):
+            return None, ""
+        la = self._la_links[idx]
+        award_id = la.get("award_id")
+        award_name = la.get("award_name") or ""
+        return (int(award_id) if award_id is not None else None), award_name
+
+    def _on_assign_authorized_click(self):
+        award_id, award_name = self._current_award_context()
+        if award_id is None:
+            QMessageBox.information(self, "Назначение", "Сначала выберите лауреата–награду (ППЗ).")
+            return
+        self.assign_authorized_requested.emit(award_id, award_name)
+
+    def _laureate_link_label(self, laureate_award_id) -> str:
+        try:
+            la_id = int(laureate_award_id)
+        except (TypeError, ValueError):
+            return str(laureate_award_id)
+        for it in self._la_links:
+            if int(it.get("laureate_award_id") or -1) == la_id:
+                name = it.get("full_name") or it.get("laureate_name") or "—"
+                award = it.get("award_name") or "—"
+                return f"{name} — {award}"
+        return f"Связка #{la_id}"
+
+    def _member_name(self, member_id) -> str:
+        try:
+            mid = int(member_id)
+        except (TypeError, ValueError):
+            return str(member_id)
+        for m in AppCache.committee_members or []:
+            if int(m.get("id") or -1) == mid:
+                return m.get("full_name") or f"#{mid}"
+        return f"#{mid}"
 
     def _on_laureate_changed(self, idx: int):
         self.info_display.clear()
@@ -179,7 +260,15 @@ class PPZSubmissionPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Выберите связку лауреат–награда.")
             return
         if auth_id is None:
-            QMessageBox.warning(self, "Ошибка", "Выберите уполномоченного.")
+            answer = QMessageBox.question(
+                self,
+                "Уполномоченный не назначен",
+                "Для этой награды нет уполномоченного члена НК.\n\n"
+                "Перейти к назначению?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                self._on_assign_authorized_click()
             return
         try:
             created = self.api.create_ppz_submission(
@@ -207,10 +296,10 @@ class PPZSubmissionPage(QWidget):
             id_item.setData(Qt.UserRole, pid)
             self.ppz_table.setItem(i, 0, id_item)
             self.ppz_table.setItem(
-                i, 1, QTableWidgetItem(str(item.get("laureate_award_id", "—"))),
+                i, 1, QTableWidgetItem(self._laureate_link_label(item.get("laureate_award_id"))),
             )
             self.ppz_table.setItem(
-                i, 2, QTableWidgetItem(str(item.get("authorized_member_id", "—"))),
+                i, 2, QTableWidgetItem(self._member_name(item.get("authorized_member_id"))),
             )
             self.ppz_table.setItem(
                 i, 3, QTableWidgetItem(str(item.get("submission_date", item.get("date", "—")))),

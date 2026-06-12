@@ -295,6 +295,26 @@ class TestDistribution:
         assert len(items) >= 1
         assert "sent" in items[0]
         assert "member_name" in items[0]
+        assert items[0]["has_voted"] is False
+
+    def test_monitoring_has_voted_after_vote(self, client):
+        bulletin, _, question, member, _ = _setup_bulletin_with_question(client)
+        client.post(
+            f"/api/voting/bulletins/{bulletin['id']}/distribute",
+            json={"member_ids": [member["id"]]},
+        )
+        client.post(
+            f"/api/voting/questions/{question['id']}/votes",
+            json={
+                "question_id": question["id"],
+                "member_id": member["id"],
+                "value": "for",
+            },
+        )
+        r = client.get(f"/api/voting/bulletins/{bulletin['id']}/monitoring")
+        assert r.status_code == 200
+        entry = next(i for i in r.json() if i["member_id"] == member["id"])
+        assert entry["has_voted"] is True
 
 
 # ── Votes ─────────────────────────────────────────────────────────────────────

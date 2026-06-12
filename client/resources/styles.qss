@@ -192,27 +192,69 @@ QPushButton:disabled {
 }
 
 QPushButton[class="btn-danger"] {
-    background-color: #F44336;
+    background-color: #E53935;
+    color: #ffffff;
+    border: none;
 }
 
 QPushButton[class="btn-danger"]:hover {
-    background-color: #D32F2F;
+    background-color: #C62828;
+    color: #ffffff;
+}
+
+QPushButton[class="btn-danger"]:pressed {
+    background-color: #B71C1C;
+    color: #ffffff;
 }
 
 QPushButton[class="btn-secondary"] {
     background-color: #78909C;
+    color: #ffffff;
+    border: none;
 }
 
 QPushButton[class="btn-secondary"]:hover {
     background-color: #607D8B;
+    color: #ffffff;
 }
 
 QPushButton[class="btn-success"] {
     background-color: #4CAF50;
+    color: #ffffff;
+    border: none;
 }
 
 QPushButton[class="btn-success"]:hover {
     background-color: #388E3C;
+    color: #ffffff;
+}
+
+/* ── Справка «?» ─────────────────────────────────────────────────── */
+
+QPushButton[class="help-btn"] {
+    background-color: #ffffff;
+    color: #212121;
+    border: 1px solid #212121;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 0;
+    min-height: 18px;
+    max-height: 20px;
+    min-width: 18px;
+    max-width: 20px;
+}
+
+QPushButton[class="help-btn"]:hover {
+    background-color: #f5f5f5;
+    color: #000000;
+}
+
+QWidget[class="page-help-bar"] {
+    background-color: #fafafa;
+    border: 1px solid #e8e8e8;
+    border-radius: 4px;
+    padding: 4px 8px;
 }
 
 /* ── Input fields ────────────────────────────────────────────────── */
@@ -266,6 +308,14 @@ QComboBox QAbstractItemView {
     selection-background-color: #d6eaff;
     selection-color: #1a2332;
     padding: 4px;
+}
+
+/* Комбобоксы внутри ячеек таблицы — компактные, без обрезания текста */
+QComboBox[class="table-cell-widget"] {
+    padding: 2px 6px;
+    min-height: 0px;
+    max-height: 28px;
+    font-size: 12px;
 }
 
 /* ── Scroll bars (content area) ──────────────────────────────────── */
@@ -340,6 +390,27 @@ QStatusBar QProgressBar::chunk {
     border-radius: 3px;
 }
 
+QPushButton[class="status-bar-btn"] {
+    background-color: #78909C;
+    color: #ffffff;
+    border: none;
+    padding: 0 10px;
+    min-height: 0;
+    max-height: 22px;
+    font-size: 11px;
+    font-weight: 600;
+    margin: 0 8px 0 0;
+    border-radius: 3px;
+}
+
+QPushButton[class="status-bar-btn"]:hover {
+    background-color: #607D8B;
+}
+
+QPushButton[class="status-bar-btn"]:pressed {
+    background-color: #546E7A;
+}
+
 /* ── Tab widget ──────────────────────────────────────────────────── */
 
 QTabWidget::pane {
@@ -412,4 +483,20 @@ QToolTip {
     padding: 6px 10px;
     font-size: 12px;
     border-radius: 3px;
+}
+
+/* ── Offline banner ──────────────────────────────────────────────── */
+
+QWidget[class="offline-banner"] {
+    background-color: #fff8e1;
+    border-bottom: 1px solid #ffc107;
+}
+
+QWidget[class="offline-banner"] QLabel {
+    color: #5d4037;
+    font-size: 13px;
+}
+
+QWidget[class="offline-banner"] QPushButton {
+    min-width: 120px;
 }

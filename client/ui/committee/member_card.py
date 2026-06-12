@@ -248,8 +248,8 @@ class MemberCardPage(QWidget):
         except APIError:
             rights = []
 
-        self._signing_data = [r for r in rights if r.get("right_type") == "signer"]
-        self._authorized_data = [r for r in rights if r.get("right_type") == "authorized"]
+        self._signing_data = [r for r in rights if r.get("role") == "signer"]
+        self._authorized_data = [r for r in rights if r.get("role") == "authorized"]
 
         self._fill_rights_table(self.signing_table, self._signing_data)
         self._fill_rights_table(self.auth_table, self._authorized_data)
@@ -338,7 +338,11 @@ class MemberCardPage(QWidget):
         if award_id is None:
             return
         try:
-            self.api.assign_signing_right(self._member_id, {"award_id": award_id, "right_type": "signer"})
+            self.api.assign_signing_right(self._member_id, {
+                "member_id": self._member_id,
+                "award_id": award_id,
+                "role": "signer",
+            })
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось назначить:\n{e}")
             return
@@ -358,7 +362,11 @@ class MemberCardPage(QWidget):
         if award_id is None:
             return
         try:
-            self.api.assign_signing_right(self._member_id, {"award_id": award_id, "right_type": "authorized"})
+            self.api.assign_signing_right(self._member_id, {
+                "member_id": self._member_id,
+                "award_id": award_id,
+                "role": "authorized",
+            })
         except APIError as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось назначить:\n{e}")
             return

@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFormLayout, QLabel, QScrollArea, QWidget
+from PyQt5.QtWidgets import QFormLayout, QLabel, QScrollArea, QWidget, QPushButton
+
+
+def apply_button_class(btn: QPushButton, css_class: str) -> None:
+    """Применить класс из styles.qss (после setProperty нужен repolish)."""
+    btn.setProperty("class", css_class)
+    style = btn.style()
+    style.unpolish(btn)
+    style.polish(btn)
+    btn.update()
 
 
 def make_form_label(text: str, min_width: int = 178) -> QLabel:

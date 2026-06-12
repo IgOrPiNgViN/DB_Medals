@@ -226,6 +226,7 @@ class MonitoringEntry(BaseModel):
     sent_date: Optional[date] = None
     received: bool
     received_date: Optional[date] = None
+    has_voted: bool = False
 
 
 class MonitoringSummary(BaseModel):

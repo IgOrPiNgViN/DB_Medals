@@ -12,7 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "server"
+sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(SERVER))
+from load_env import bootstrap_migration_env, check_postgres  # noqa: E402
+
+bootstrap_migration_env(ROOT)
 os.chdir(SERVER)
 
 from db_migrations import (  # noqa: E402
@@ -36,5 +40,6 @@ def apply_migrations() -> None:
 
 
 if __name__ == "__main__":
+    check_postgres(os.environ["DATABASE_URL"])
     apply_migrations()
     print("migrations applied")

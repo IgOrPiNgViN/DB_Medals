@@ -11,11 +11,18 @@ from PyQt5.QtCore import pyqtSignal, Qt, QDate, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 
 from api_client import APIClient, APIError
+from ui.connection_state import connection_state
+from ui.offline_guard import (
+    connect_write_buttons,
+    save_local_draft_on_failure,
+    user_facing_error,
+    warn_if_offline,
+)
 from ui.tab_helpers import configure_tab_bar_no_clip
 from ui.numeric_sort_item import NumericSortTableItem
-from ui.table_fill import configure_table_rows
+from ui.table_fill import configure_table_rows, table_cell_combo_text, wrap_table_cell_widget
 from ui.awards.production_component_dialog import (
-    ProductionComponentDialog, PRODUCTION_STAGE_STATUSES,
+    ProductionComponentDialog, make_stage_status_combo,
 )
 from ui.awards.award_warehouse_dialog import AwardWarehouseDialog
 
@@ -600,11 +607,16 @@ class _CharacteristicsTab(QWidget):
     def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
             return True
+        if silent and not connection_state.is_online:
+            return False
+        if not silent and not warn_if_offline(self, "Сохранение"):
+            return False
         desc = self.fields["description"].text().strip()
         payload = {
             "name": self.fields["name"].text().strip(),
             "description": desc if desc else None,
         }
+        label = payload["name"] or f"Награда #{self.award_id}"
         try:
             self.api.update_award(self.award_id, payload)
             self._set_dirty(False)
@@ -612,8 +624,18 @@ class _CharacteristicsTab(QWidget):
                 QMessageBox.information(self, "Сохранено", "Название и описание сохранены.")
             return True
         except APIError as e:
+            if save_local_draft_on_failure(
+                kind="award",
+                entity_id=self.award_id,
+                label=label,
+                payload=payload,
+                parent=self,
+                silent=silent,
+                error=e,
+            ):
+                return False
             if not silent:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+                QMessageBox.critical(self, "Ошибка", user_facing_error(e))
             return False
 
 
@@ -762,6 +784,10 @@ class _EstablishmentTab(QWidget):
     def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
             return True
+        if silent and not connection_state.is_online:
+            return False
+        if not silent and not warn_if_offline(self, "Сохранение"):
+            return False
         payload = self._collect()
         try:
             if self._exists:
@@ -775,7 +801,7 @@ class _EstablishmentTab(QWidget):
             return True
         except APIError as e:
             if not silent:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+                QMessageBox.critical(self, "Ошибка", user_facing_error(e))
             return False
 
 
@@ -880,6 +906,10 @@ class _DevelopmentTab(QWidget):
     def _save(self, silent: bool = False) -> bool:
         if self.award_id is None:
             return True
+        if silent and not connection_state.is_online:
+            return False
+        if not silent and not warn_if_offline(self, "Сохранение"):
+            return False
         payload = self._collect()
         try:
             if self._exists:
@@ -893,7 +923,7 @@ class _DevelopmentTab(QWidget):
             return True
         except APIError as e:
             if not silent:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить.\n{e}")
+                QMessageBox.critical(self, "Ошибка", user_facing_error(e))
             return False
 
 
@@ -925,6 +955,7 @@ class _ApprovalsTab(QWidget):
         self.btn_del.clicked.connect(self._on_delete)
         btn_row.addWidget(self.btn_del)
         root.addLayout(btn_row)
+        connect_write_buttons(self.btn_add, self.btn_edit, self.btn_del)
 
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.COLUMNS))
@@ -985,6 +1016,8 @@ class _ApprovalsTab(QWidget):
     def _on_add(self):
         if self.award_id is None:
             return
+        if not warn_if_offline(self, "Добавление согласования"):
+            return
         dlg = _AddRowDialog("Новое согласование", [
             ("Тип:", "approval_type", "combo"),
             ("Дата:", "date", "date"),
@@ -1007,6 +1040,8 @@ class _ApprovalsTab(QWidget):
 
     def _on_edit(self):
         if self.award_id is None:
+            return
+        if not warn_if_offline(self, "Изменение согласования"):
             return
         pid = self._approval_id_from_row(self.table.currentRow())
         if pid is None:
@@ -1042,6 +1077,8 @@ class _ApprovalsTab(QWidget):
 
     def _on_delete(self):
         if self.award_id is None:
+            return
+        if not warn_if_offline(self, "Удаление согласования"):
             return
         pid = self._approval_id_from_row(self.table.currentRow())
         if pid is None:
@@ -1110,10 +1147,15 @@ class _ProductionsTab(QWidget):
         self.stages_table = QTableWidget()
         self.stages_table.setColumnCount(len(self.STAGE_COLUMNS))
         self.stages_table.setHorizontalHeaderLabels(self.STAGE_COLUMNS)
-        self.stages_table.horizontalHeader().setStretchLastSection(True)
-        self.stages_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        stages_hdr = self.stages_table.horizontalHeader()
+        stages_hdr.setStretchLastSection(True)
+        stages_hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        stages_hdr.setSectionResizeMode(1, QHeaderView.Interactive)
+        stages_hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        stages_hdr.setMinimumSectionSize(100)
+        self.stages_table.setColumnWidth(1, 160)
         self.stages_table.verticalHeader().setVisible(False)
-        configure_table_rows(self.stages_table, 36)
+        configure_table_rows(self.stages_table, 40)
         self.stages_table.doubleClicked.connect(self._on_stages_double_click)
         sg.addWidget(self.stages_table)
         root.addWidget(stages_group)
@@ -1136,6 +1178,12 @@ class _ProductionsTab(QWidget):
         self.btn_del.clicked.connect(self._on_delete)
         btn_row.addWidget(self.btn_del)
         root.addLayout(btn_row)
+        connect_write_buttons(
+            self.btn_save_stages,
+            self.btn_add,
+            self.btn_edit,
+            self.btn_del,
+        )
 
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.COLUMNS))
@@ -1190,16 +1238,8 @@ class _ProductionsTab(QWidget):
             label_item.setData(Qt.UserRole, st.get("stage_key"))
             self.stages_table.setItem(row, 0, label_item)
 
-            status_combo = QComboBox()
-            status_combo.setEditable(True)
-            cur = st.get("status") or ""
-            for s in PRODUCTION_STAGE_STATUSES:
-                status_combo.addItem(s)
-            if cur and cur not in PRODUCTION_STAGE_STATUSES:
-                status_combo.addItem(cur)
-            idx = status_combo.findText(cur)
-            status_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            self.stages_table.setCellWidget(row, 1, status_combo)
+            status_combo = make_stage_status_combo(st.get("status") or "")
+            self.stages_table.setCellWidget(row, 1, wrap_table_cell_widget(status_combo))
 
             self.stages_table.setItem(row, 2, QTableWidgetItem(str(st.get("stage_date") or "")))
             att_count = int(st.get("attachment_count") or 0)
@@ -1216,6 +1256,8 @@ class _ProductionsTab(QWidget):
     def _on_save_stages(self):
         if self.award_id is None:
             return
+        if not warn_if_offline(self, "Сохранение этапов"):
+            return
         api_ct = self.stage_component_combo.currentData()
         if not api_ct:
             return
@@ -1230,11 +1272,7 @@ class _ProductionsTab(QWidget):
                 note = note.rsplit("[", 1)[0].strip()
             stages.append({
                 "stage_key": key_item.data(Qt.UserRole),
-                "status": (
-                    self.stages_table.cellWidget(row, 1).currentText()
-                    if isinstance(self.stages_table.cellWidget(row, 1), QComboBox)
-                    else ""
-                ),
+                "status": table_cell_combo_text(self.stages_table, row, 1),
                 "stage_date": (self.stages_table.item(row, 2).text() if self.stages_table.item(row, 2) else ""),
                 "attachment_note": note,
             })
@@ -1308,6 +1346,8 @@ class _ProductionsTab(QWidget):
     def _on_add(self):
         if self.award_id is None:
             return
+        if not warn_if_offline(self, "Добавление заказа"):
+            return
         dlg = _AddRowDialog("Новый заказ на производство", PRODUCTION_DIALOG_FIELDS, self)
         combo = dlg.combo_widget("component_type")
         for t in PRODUCTION_COMPONENT_TYPES:
@@ -1351,6 +1391,8 @@ class _ProductionsTab(QWidget):
     def _on_edit(self):
         if self.award_id is None:
             return
+        if not warn_if_offline(self, "Изменение заказа"):
+            return
         pid = self._production_id_from_row(self.table.currentRow())
         if pid is None:
             QMessageBox.information(self, "Изменение", "Выберите строку в таблице.")
@@ -1388,6 +1430,8 @@ class _ProductionsTab(QWidget):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить заказ.\n{e}")
 
     def _on_delete(self):
+        if not warn_if_offline(self, "Удаление заказа"):
+            return
         pid = self._current_production_id()
         if pid is None:
             QMessageBox.information(self, "Удаление", "Выберите строку в таблице.")
@@ -1516,8 +1560,7 @@ class AwardDetailPage(QWidget):
 
     def _on_dirty_changed(self, _dirty: bool):
         self._update_title_dirty(_dirty)
-        # autosave debounce: save 1.5s after last change
-        if self._has_unsaved():
+        if self._has_unsaved() and connection_state.is_online:
             self._autosave_timer.start(1500)
 
     def _autosave_silent(self):

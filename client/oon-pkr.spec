@@ -8,6 +8,7 @@ block_cipher = None
 
 client_root = Path(os.path.dirname(os.path.abspath(SPEC)))
 project_root = client_root.parent
+_app_icon = client_root / "resources" / "app_icon.ico"
 
 # Qt-плагины (platforms) — явно, если hook PyInstaller не находит путь
 _qt_binaries = []
@@ -30,7 +31,11 @@ a = Analysis(
     [str(client_root / "launcher.py")],
     pathex=[str(client_root)],
     binaries=_qt_binaries,
-    datas=[(str(client_root / "resources" / "styles.qss"), "resources")],
+    datas=[
+        (str(client_root / "resources" / "styles.qss"), "resources"),
+        (str(client_root / "resources" / "app_icon.ico"), "resources"),
+        (str(client_root / "resources" / "app_icon.png"), "resources"),
+    ],
     hiddenimports=[
         "ui.main_window",
         "ui.awards.awards_cards",
@@ -60,6 +65,7 @@ a = Analysis(
         "ui.tab_helpers",
         "api_client",
         "config",
+        "app_icon",
         "main",
         "httpx",
         "httpx._transports",
@@ -93,6 +99,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(_app_icon) if _app_icon.is_file() else None,
 )
 
 coll = COLLECT(

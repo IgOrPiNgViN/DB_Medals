@@ -16,8 +16,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "server"
 PHOTO_DIR = ROOT / "data" / "photos"
 
+sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(SERVER))
 import os
+from load_env import bootstrap_migration_env  # noqa: E402
+
+bootstrap_migration_env(ROOT)
 os.chdir(SERVER)
 
 from sqlalchemy.orm import Session  # noqa: E402
