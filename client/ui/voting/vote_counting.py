@@ -437,7 +437,15 @@ class VoteCountingPage(QWidget):
             )
             QMessageBox.information(self, "Успех", "Протокол сформирован.")
         except APIError as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать протокол:\n{e}")
+            if e.status_code == 409:
+                QMessageBox.information(
+                    self,
+                    "Протокол",
+                    "Для этого бюллетеня протокол уже создан.\n"
+                    "Нажмите «Показать протокол» или откройте раздел «Протокол».",
+                )
+            else:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сформировать протокол:\n{e}")
 
     def _on_show_protocol(self):
         if self._current_bulletin_id is None:
